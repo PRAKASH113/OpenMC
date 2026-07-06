@@ -1,0 +1,24 @@
+[package]
+name = "openmc08"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { version = "0.19.0", features = ["bevy_dev_tools", "debug"] } # core game engine (ECS, rendering, input, windowing); bevy_dev_tools enables the built-in diagnostics/performance overlay, debug enables real component/system names for diagnostics
+env_logger = "0.11.11" # startup logging for main.rs entry point
+fastrand = "2.4.1" # lightweight RNG for gameplay/world randomness
+noise = "0.9.0"    # noise functions for procedural terrain generation
+
+# Without this, `cargo run`'s default dev profile compiles Bevy itself (ECS,
+# renderer, wgpu) fully unoptimized, which alone is enough to cap FPS in the
+# teens regardless of scene complexity — this is Bevy's own documented
+# recommendation, not a project-specific tweak. `opt-level = 1` on our own
+# crate keeps iterative compiles fast; `opt-level = 3` on every dependency is
+# what actually matters for runtime FPS. First build after this change
+# recompiles all dependencies once (slower); every build after that is fast
+# again.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
