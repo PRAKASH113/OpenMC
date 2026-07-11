@@ -2,24 +2,24 @@
 //! `Mesh` (one entity per chunk, never one entity per block — see
 //! `docs/architecture.md`).
 //!
-//! For each of the 3 axes, blocks are packed into per-column `u32` bitmasks
-//! (`CHUNK_SIZE` is 32, so a whole column fits in one word). Face visibility
-//! for an entire column is then a couple of bitwise ops instead of per-block
-//! comparisons (`column & !(column >> 1)` finds every "solid here, air above"
-//! bit in the column at once). Each resulting 2D slice of visible faces is
-//! then greedily merged into the fewest possible rectangles.
+//! For each of the 3 axes, blocks are packed into per-column bitmasks
+//! (`CHUNK_SIZE` is 32, so a whole column fits in one word — plus one extra
+//! padding bit for the Y axis, see `mesh_axis_y`). Face visibility for an
+//! entire column is then a couple of bitwise ops instead of per-block
+//! comparisons (`column & !(column >> 1)` finds every "opaque here, air
+//! above" bit in the column at once). Each resulting 2D slice of visible
+//! faces is split by block type (so a stone quad never merges with a
+//! grass one) and each type's slice is greedily merged into the fewest
+//! possible same-colored rectangles.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::mesh::Indices;
 use bevy::render::render_resource::PrimitiveTopology;
 
-use super::chunk::{ChunkData, CHUNK_SIZE, PADDED_SIZE, PADDING, SOLID};
-
-/// Debug-only uniform color for every solid block, so mesh-merging
-/// correctness can be verified independently of real per-block-type
-/// coloring (a fast follow-up once this is confirmed working).
-const DEBUG_GREEN: [f32; 4] = [0.15, 0.75, 0.25, 1.0];
+use super::chunk::{
+    block_color, is_opaque, BlockId, ChunkData, BLOCK_TYPE_COUNT, CHUNK_SIZE, PADDED_SIZE, PADDING,
+};
 
 pub fn build_chunk_mesh(data: &ChunkData) -> Mesh {
     let mut builder = MeshBuilder::default();
@@ -40,11 +40,11 @@ struct MeshBuilder {
 }
 
 impl MeshBuilder {
-    fn push_quad(&mut self, corners: [[f32; 3]; 4], normal: [f32; 3]) {
+    fn push_quad(&mut self, corners: [[f32; 3]; 4], normal: [f32; 3], color: [f32; 4]) {
         let start = self.positions.len() as u32;
         self.positions.extend(corners);
         self.normals.extend([normal; 4]);
-        self.colors.extend([DEBUG_GREEN; 4]);
+        self.colors.extend([color; 4]);
         self.indices
             .extend([start, start + 1, start + 2, start, start + 2, start + 3]);
     }
@@ -69,9 +69,13 @@ type Mask = [u32; CHUNK_SIZE];
 /// `emit(a, width, b, height)` once per rectangle (axis-agnostic — callers
 /// map `(a, b)` back to world axes). Ported from the row-and-bitscan
 /// technique in `cgerikj/binary-greedy-meshing` (cloned into `ref/` for
-/// study), simplified since we only have one block type today (their
-/// version also tracks per-voxel type equality while merging; see
-/// `docs/optimisations.md`). Two bitwise tricks replace the old
+/// study, deleted once done — see `docs/optimisations.md`). Their version
+/// also tracks per-voxel type equality *inside* this same merge loop; ours
+/// doesn't need to — callers split a level's visibility mask into one `Mask`
+/// per block type *before* calling this (see `mesh_axis_y` etc.), so two
+/// different block types are never even candidates for the same merge pass,
+/// and this function stays exactly as simple (and exactly as tested) as
+/// before multiple block types existed. Two bitwise tricks replace the old
 /// `Grid`-and-nested-loop version:
 /// - `(!(row >> a)).trailing_zeros()` finds the width of a contiguous run of
 ///   set bits starting at `a` in one CPU instruction (`bsf`/`ctz`), instead
@@ -111,12 +115,18 @@ fn greedy_merge(mask: Mask, mut emit: impl FnMut(usize, usize, usize, usize)) {
 
 fn mesh_axis_y(data: &ChunkData, builder: &mut MeshBuilder) {
     let n = CHUNK_SIZE;
-    let mut columns = vec![0u32; n * n]; // indexed [x * n + z], bit y = solid at (x, y, z)
+    // u64, not u32: fits one extra bit (position `n`) for the padded row
+    // sampled from whatever chunk sits above this one (`chunk::PADDED_HEIGHT`
+    // — needed once chunks stack vertically, see `docs/world-generation.md`).
+    // Without it, this chunk's own top layer would always compute as
+    // bordering open air, even where solid terrain actually continues in the
+    // chunk above — a phantom floor face rendered underground.
+    let mut columns = vec![0u64; n * n]; // indexed [x * n + z], bit y = opaque at (x, y, z)
     for x in 0..n {
         for z in 0..n {
-            let mut bits = 0u32;
-            for y in 0..n {
-                if data.get(x, y, z) == SOLID {
+            let mut bits = 0u64;
+            for y in 0..=n {
+                if is_opaque(data.get_padded(x + PADDING, y, z + PADDING)) {
                     bits |= 1 << y;
                 }
             }
@@ -126,69 +136,76 @@ fn mesh_axis_y(data: &ChunkData, builder: &mut MeshBuilder) {
 
     // Up/down face visibility for an *entire column* computed once, not once
     // per (x, y, z) triple: `col & !(col >> 1)` sets bit y wherever y is
-    // solid and y+1 is air — this is the actual "binary" trick this file's
-    // header comment describes (a handful of instructions per column instead
-    // of 32 repeated shift/mask checks); the loop below used to redo the same
-    // two shifts per y-level instead of computing all 32 result bits at once.
-    // The top bit falls out correctly for free: shifting right fills the
-    // vacated top bit with 0, i.e. "nothing above the last block," with no
-    // separate bounds check needed. `col & !(col << 1)` is the mirror-image
-    // trick for down faces.
-    let mut up_faces = vec![0u32; n * n];
-    let mut down_faces = vec![0u32; n * n];
+    // opaque and y+1 is air — the actual "binary" trick this file's header
+    // comment describes. Bit `n` (the padding row) participates in this shift
+    // like any other bit, which is exactly what makes the top layer's
+    // up-face check correct against the chunk above.
+    let mut up_faces = vec![0u64; n * n];
+    let mut down_faces = vec![0u64; n * n];
     for i in 0..columns.len() {
         let col = columns[i];
         up_faces[i] = col & !(col >> 1);
         down_faces[i] = col & !(col << 1);
     }
 
-    // Down-facing (-Y) faces only ever occur where a solid block has air
-    // directly below it. The generator produces pure "solid below the
-    // surface height" columns with no caves/overhangs, so the *only* place
-    // that's ever true is y=0 (the world floor) — which the camera can never
-    // get under to see. Skipping the whole down pass is a free win today;
-    // revisit if caves/overhangs are ever added. `down_faces` above is
-    // computed regardless (cheap, keeps this branch symmetric/ready).
+    // Down-facing (-Y) faces only ever occur where an opaque block has air
+    // directly below it. `generator::block_at` only ever produces "opaque
+    // below the computed surface height, water/air above" columns —
+    // monotonic, no caves or overhangs — so once a column goes solid it stays
+    // solid all the way down (see that function's doc comment), meaning a
+    // down face is structurally impossible anywhere a camera could ever be.
+    // Skipping the whole down pass is a free win; revisit the moment caves,
+    // overhangs, or floating structures become possible. `down_faces` above
+    // is still computed regardless (cheap, keeps this branch symmetric/ready).
     for up in [true] {
         let faces = if up { &up_faces } else { &down_faces };
         for y in 0..n {
-            let mut mask: Mask = [0; CHUNK_SIZE];
-            let mut any = false;
+            let mut masks: [Mask; BLOCK_TYPE_COUNT] = [[0; CHUNK_SIZE]; BLOCK_TYPE_COUNT];
+            let mut used = [false; BLOCK_TYPE_COUNT];
             for x in 0..n {
                 for z in 0..n {
                     if (faces[x * n + z] >> y) & 1 == 1 {
-                        mask[z] |= 1 << x;
-                        any = true;
+                        let block = data.get(x, y, z) as usize;
+                        masks[block][z] |= 1 << x;
+                        used[block] = true;
                     }
                 }
             }
-            if !any {
+            if !used.iter().any(|&u| u) {
                 continue;
             }
 
             let level = if up { (y + 1) as f32 } else { y as f32 };
-            greedy_merge(mask, |x, width, z, depth| {
-                let (x0, x1) = (x as f32, (x + width) as f32);
-                let (z0, z1) = (z as f32, (z + depth) as f32);
-                if up {
-                    builder.push_quad(
-                        [[x0, level, z0], [x0, level, z1], [x1, level, z1], [x1, level, z0]],
-                        [0.0, 1.0, 0.0],
-                    );
-                } else {
-                    builder.push_quad(
-                        [[x0, level, z1], [x0, level, z0], [x1, level, z0], [x1, level, z1]],
-                        [0.0, -1.0, 0.0],
-                    );
+            for block in 1..BLOCK_TYPE_COUNT {
+                if !used[block] {
+                    continue;
                 }
-            });
+                let color = block_color(block as BlockId);
+                greedy_merge(masks[block], |x, width, z, depth| {
+                    let (x0, x1) = (x as f32, (x + width) as f32);
+                    let (z0, z1) = (z as f32, (z + depth) as f32);
+                    if up {
+                        builder.push_quad(
+                            [[x0, level, z0], [x0, level, z1], [x1, level, z1], [x1, level, z0]],
+                            [0.0, 1.0, 0.0],
+                            color,
+                        );
+                    } else {
+                        builder.push_quad(
+                            [[x0, level, z1], [x0, level, z0], [x1, level, z0], [x1, level, z1]],
+                            [0.0, -1.0, 0.0],
+                            color,
+                        );
+                    }
+                });
+            }
         }
     }
 }
 
 fn mesh_axis_x(data: &ChunkData, builder: &mut MeshBuilder) {
     let n = CHUNK_SIZE;
-    // Padded columns: bit `p` (0..PADDED_SIZE) = solid at padded x = p, i.e.
+    // Padded columns: bit `p` (0..PADDED_SIZE) = opaque at padded x = p, i.e.
     // world offset (p - PADDING) from the chunk origin. Including the
     // neighboring chunks' border blocks (sampled by the generator) lets face
     // visibility at the chunk edge see the real neighbor instead of assuming air.
@@ -197,7 +214,7 @@ fn mesh_axis_x(data: &ChunkData, builder: &mut MeshBuilder) {
         for z in 0..n {
             let mut bits = 0u64;
             for padded_x in 0..PADDED_SIZE {
-                if data.get_padded(padded_x, y, z + PADDING) == SOLID {
+                if is_opaque(data.get_padded(padded_x, y, z + PADDING)) {
                     bits |= 1 << padded_x;
                 }
             }
@@ -220,52 +237,61 @@ fn mesh_axis_x(data: &ChunkData, builder: &mut MeshBuilder) {
         let faces = if positive { &right_faces } else { &left_faces };
         for x in 0..n {
             let px = x + PADDING;
-            let mut mask: Mask = [0; CHUNK_SIZE];
-            let mut any = false;
+            let mut masks: [Mask; BLOCK_TYPE_COUNT] = [[0; CHUNK_SIZE]; BLOCK_TYPE_COUNT];
+            let mut used = [false; BLOCK_TYPE_COUNT];
             for y in 0..n {
                 for z in 0..n {
                     if (faces[y * n + z] >> px) & 1 == 1 {
-                        mask[z] |= 1 << y;
-                        any = true;
+                        let block = data.get(x, y, z) as usize;
+                        masks[block][z] |= 1 << y;
+                        used[block] = true;
                     }
                 }
             }
-            if !any {
+            if !used.iter().any(|&u| u) {
                 continue;
             }
 
             let level = if positive { (x + 1) as f32 } else { x as f32 };
-            greedy_merge(mask, |y, width, z, depth| {
-                let (y0, y1) = (y as f32, (y + width) as f32);
-                let (z0, z1) = (z as f32, (z + depth) as f32);
-                if positive {
-                    // Right (+X)
-                    builder.push_quad(
-                        [[level, y0, z0], [level, y1, z0], [level, y1, z1], [level, y0, z1]],
-                        [1.0, 0.0, 0.0],
-                    );
-                } else {
-                    // Left (-X)
-                    builder.push_quad(
-                        [[level, y0, z1], [level, y1, z1], [level, y1, z0], [level, y0, z0]],
-                        [-1.0, 0.0, 0.0],
-                    );
+            for block in 1..BLOCK_TYPE_COUNT {
+                if !used[block] {
+                    continue;
                 }
-            });
+                let color = block_color(block as BlockId);
+                greedy_merge(masks[block], |y, width, z, depth| {
+                    let (y0, y1) = (y as f32, (y + width) as f32);
+                    let (z0, z1) = (z as f32, (z + depth) as f32);
+                    if positive {
+                        // Right (+X)
+                        builder.push_quad(
+                            [[level, y0, z0], [level, y1, z0], [level, y1, z1], [level, y0, z1]],
+                            [1.0, 0.0, 0.0],
+                            color,
+                        );
+                    } else {
+                        // Left (-X)
+                        builder.push_quad(
+                            [[level, y0, z1], [level, y1, z1], [level, y1, z0], [level, y0, z0]],
+                            [-1.0, 0.0, 0.0],
+                            color,
+                        );
+                    }
+                });
+            }
         }
     }
 }
 
 fn mesh_axis_z(data: &ChunkData, builder: &mut MeshBuilder) {
     let n = CHUNK_SIZE;
-    // Padded columns: bit `p` (0..PADDED_SIZE) = solid at padded z = p (see
+    // Padded columns: bit `p` (0..PADDED_SIZE) = opaque at padded z = p (see
     // `mesh_axis_x` for why the padding matters).
     let mut columns = vec![0u64; n * n]; // indexed [x * n + y]
     for x in 0..n {
         for y in 0..n {
             let mut bits = 0u64;
             for padded_z in 0..PADDED_SIZE {
-                if data.get_padded(x + PADDING, y, padded_z) == SOLID {
+                if is_opaque(data.get_padded(x + PADDING, y, padded_z)) {
                     bits |= 1 << padded_z;
                 }
             }
@@ -287,38 +313,47 @@ fn mesh_axis_z(data: &ChunkData, builder: &mut MeshBuilder) {
         let faces = if positive { &front_faces } else { &back_faces };
         for z in 0..n {
             let pz = z + PADDING;
-            let mut mask: Mask = [0; CHUNK_SIZE];
-            let mut any = false;
+            let mut masks: [Mask; BLOCK_TYPE_COUNT] = [[0; CHUNK_SIZE]; BLOCK_TYPE_COUNT];
+            let mut used = [false; BLOCK_TYPE_COUNT];
             for x in 0..n {
                 for y in 0..n {
                     if (faces[x * n + y] >> pz) & 1 == 1 {
-                        mask[y] |= 1 << x;
-                        any = true;
+                        let block = data.get(x, y, z) as usize;
+                        masks[block][y] |= 1 << x;
+                        used[block] = true;
                     }
                 }
             }
-            if !any {
+            if !used.iter().any(|&u| u) {
                 continue;
             }
 
             let level = if positive { (z + 1) as f32 } else { z as f32 };
-            greedy_merge(mask, |x, width, y, depth| {
-                let (x0, x1) = (x as f32, (x + width) as f32);
-                let (y0, y1) = (y as f32, (y + depth) as f32);
-                if positive {
-                    // Front (+Z)
-                    builder.push_quad(
-                        [[x0, y0, level], [x1, y0, level], [x1, y1, level], [x0, y1, level]],
-                        [0.0, 0.0, 1.0],
-                    );
-                } else {
-                    // Back (-Z)
-                    builder.push_quad(
-                        [[x1, y0, level], [x0, y0, level], [x0, y1, level], [x1, y1, level]],
-                        [0.0, 0.0, -1.0],
-                    );
+            for block in 1..BLOCK_TYPE_COUNT {
+                if !used[block] {
+                    continue;
                 }
-            });
+                let color = block_color(block as BlockId);
+                greedy_merge(masks[block], |x, width, y, depth| {
+                    let (x0, x1) = (x as f32, (x + width) as f32);
+                    let (y0, y1) = (y as f32, (y + depth) as f32);
+                    if positive {
+                        // Front (+Z)
+                        builder.push_quad(
+                            [[x0, y0, level], [x1, y0, level], [x1, y1, level], [x0, y1, level]],
+                            [0.0, 0.0, 1.0],
+                            color,
+                        );
+                    } else {
+                        // Back (-Z)
+                        builder.push_quad(
+                            [[x1, y0, level], [x0, y0, level], [x0, y1, level], [x1, y1, level]],
+                            [0.0, 0.0, -1.0],
+                            color,
+                        );
+                    }
+                });
+            }
         }
     }
 }
@@ -428,6 +463,52 @@ mod tests {
                 *row = fastrand::u32(..);
             }
             check_merge_is_correct(mask);
+        }
+    }
+
+    /// End-to-end check that `mesh_axis_y` never merges two different block
+    /// types into the same quad — the whole reason each level's visibility
+    /// mask gets split into one `Mask` *per type* before calling
+    /// `greedy_merge`, rather than passing type data through the merge
+    /// itself. Builds a chunk with a stone half and a grass half at the same
+    /// height (touching along one edge) and confirms every *vertex color* in
+    /// the resulting mesh's top faces is a pure, single block color — a
+    /// same-quad blend would show up as a third, in-between color.
+    #[test]
+    fn different_block_types_never_share_a_merged_quad() {
+        use super::super::chunk::{ChunkData, GRASS, STONE};
+        use bevy::render::mesh::VertexAttributeValues;
+
+        let mut data = ChunkData::empty();
+        for padded_x in 0..PADDED_SIZE {
+            for padded_z in 0..PADDED_SIZE {
+                for y in 0..=CHUNK_SIZE {
+                    if y >= CHUNK_SIZE / 2 {
+                        continue; // air above the halfway point
+                    }
+                    // Below the surface, always stone... except the very top
+                    // layer, split down the middle: stone on one half, grass
+                    // on the other, both at the *same* height.
+                    let is_top = y == CHUNK_SIZE / 2 - 1;
+                    let block = if is_top && padded_x < PADDED_SIZE / 2 { STONE } else if is_top { GRASS } else { STONE };
+                    data.set_padded(padded_x, y, padded_z, block);
+                }
+            }
+        }
+
+        let mesh = build_chunk_mesh(&data);
+        let VertexAttributeValues::Float32x4(colors) = mesh.attribute(Mesh::ATTRIBUTE_COLOR).unwrap() else {
+            panic!("expected the color attribute to be Float32x4");
+        };
+        let stone_color = block_color(STONE);
+        let grass_color = block_color(GRASS);
+
+        for color in colors {
+            assert!(
+                *color == stone_color || *color == grass_color,
+                "found a vertex color {color:?} that isn't a pure stone or grass color — \
+                 suggests two different block types merged into one quad"
+            );
         }
     }
 }

@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(BASE=\"C:/Users/praka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f\" *)",
+      "Read(//c/Users/praka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bevy_math-0.19.0/src/primitives/**)",
+      "Read(//c/Users/praka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bevy_render-0.19.0/src/view/**)",
+      "Read(//c/Users/praka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bevy_asset-0.19.0/src/**)",
+      "Read(//c/Users/praka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bevy-0.19.0/src/**)",
+      "Bash(xargs grep -ln \"bevy_pbr\")",
+      "Read(//c/Users/praka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bevy_mesh-0.19.0/src/**)",
+      "Read(//c/Users/praka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bevy_asset-0.19.0/src/io/file/**)",
+      "Bash(rm -f debug_skybox.png)",
+      "Bash(cargo check *)"
+    ]
+  }
+}

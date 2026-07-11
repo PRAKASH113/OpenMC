@@ -5,7 +5,11 @@ use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 use crate::app::states::PauseState;
 use crate::config::controls::{KeyBinds, MOUSE_SENSITIVITY, MOVE_SPEED};
-use crate::playing::{ChunkTile, ChunkWireframe, PlayerCamera};
+use crate::config::player::{EYE_HEIGHT, GRAVITY, JUMP_VELOCITY, TERMINAL_VELOCITY, WALK_SPEED};
+use crate::playing::{
+    collision_size, resolve_movement, ChunkManager, ChunkTile, ChunkWireframe, ControlMode,
+    Grounded, PlayerCamera, PlayerVelocity,
+};
 
 const MAX_PITCH: f32 = 1.54; // just under 90 degrees, avoids gimbal flip at the poles
 
@@ -20,6 +24,23 @@ pub fn toggle_pause(
         next_pause_state.set(match pause_state.get() {
             PauseState::Unpaused => PauseState::Paused,
             PauseState::Paused => PauseState::Unpaused,
+        });
+    }
+}
+
+/// Tab swaps between `ControlMode::Dev` (free-fly, no gravity/collision —
+/// unchanged from before this mode existed) and `ControlMode::Player`
+/// (gravity + collision box, see `docs/player-physics.md`). Unbound before
+/// this, chosen since it's a common "toggle noclip/fly" key in other games.
+pub fn toggle_control_mode(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mode: Res<State<ControlMode>>,
+    mut next_mode: ResMut<NextState<ControlMode>>,
+) {
+    if keyboard.just_pressed(KeyCode::Tab) {
+        next_mode.set(match mode.get() {
+            ControlMode::Dev => ControlMode::Player,
+            ControlMode::Player => ControlMode::Dev,
         });
     }
 }
@@ -65,6 +86,84 @@ pub fn movement_and_look(
     if direction != Vec3::ZERO {
         transform.translation += direction.normalize() * MOVE_SPEED * time.delta_secs();
     }
+}
+
+/// `ControlMode::Player`'s movement: same mouse look as `movement_and_look`,
+/// but WASD is horizontal-only (no flying — projected onto the ground
+/// plane), gravity constantly pulls down, Space jumps only when grounded,
+/// and the result goes through `resolve_movement` against `ChunkManager`
+/// instead of writing straight to `Transform`. See `docs/player-physics.md`.
+pub fn player_movement_and_look(
+    time: Res<Time>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    binds: Res<KeyBinds>,
+    mouse_motion: Res<AccumulatedMouseMotion>,
+    manager: Res<ChunkManager>,
+    query: Single<(&mut Transform, &mut PlayerCamera, &mut PlayerVelocity, &mut Grounded)>,
+) {
+    let (mut transform, mut camera, mut velocity, mut grounded) = query.into_inner();
+
+    let mouse_delta = mouse_motion.delta;
+    if mouse_delta != Vec2::ZERO {
+        camera.yaw -= mouse_delta.x * MOUSE_SENSITIVITY;
+        camera.pitch -= mouse_delta.y * MOUSE_SENSITIVITY;
+        camera.pitch = camera.pitch.clamp(-MAX_PITCH, MAX_PITCH);
+
+        transform.rotation = Quat::from_axis_angle(Vec3::Y, camera.yaw)
+            * Quat::from_axis_angle(Vec3::X, camera.pitch);
+    }
+
+    // Horizontal-only: flatten forward/right onto the ground plane so
+    // looking up/down doesn't tilt walking speed or direction.
+    let flatten = |v: Vec3| Vec3::new(v.x, 0.0, v.z).normalize_or_zero();
+    let forward = flatten(*transform.forward());
+    let right = flatten(*transform.right());
+
+    let bindings = [
+        (binds.forward, forward),
+        (binds.backward, -forward),
+        (binds.right, right),
+        (binds.left, -right),
+    ];
+
+    let mut horizontal = Vec3::ZERO;
+    for (key, vec) in bindings {
+        if keyboard.pressed(key) {
+            horizontal += vec;
+        }
+    }
+    let horizontal = horizontal.normalize_or_zero() * WALK_SPEED;
+    velocity.0.x = horizontal.x;
+    velocity.0.z = horizontal.z;
+
+    if grounded.0 && keyboard.just_pressed(binds.up) {
+        velocity.0.y = JUMP_VELOCITY;
+    }
+    velocity.0.y = (velocity.0.y - GRAVITY * time.delta_secs()).max(-TERMINAL_VELOCITY);
+
+    let size = collision_size();
+    let feet = transform.translation - Vec3::Y * EYE_HEIGHT;
+    let delta = velocity.0 * time.delta_secs();
+
+    let is_solid = |block: IVec3| manager.is_solid(block);
+    let (new_feet, blocked) = resolve_movement(&is_solid, feet, size, delta);
+
+    if blocked[0] {
+        velocity.0.x = 0.0;
+    }
+    if blocked[2] {
+        velocity.0.z = 0.0;
+    }
+    if blocked[1] {
+        // Only a downward block counts as "grounded" — bonking a ceiling
+        // while jumping shouldn't let you jump again mid-air.
+        grounded.0 = velocity.0.y < 0.0;
+        velocity.0.y = 0.0;
+    } else {
+        grounded.0 = false;
+    }
+
+    transform.translation = new_feet + Vec3::Y * EYE_HEIGHT;
 }
 
 /// Shift+1 toggles the terrain `Wireframe` debug overlay on every loaded

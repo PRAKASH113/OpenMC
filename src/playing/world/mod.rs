@@ -7,10 +7,10 @@ use bevy::pbr::wireframe::WireframePlugin;
 use bevy::prelude::*;
 
 use crate::app::states::GameState;
-use manager::ChunkManager;
 
 pub(crate) use chunk::ChunkTile;
 pub(crate) use generator::MAX_SURFACE_HEIGHT;
+pub(crate) use manager::ChunkManager;
 
 // `chunk::{ChunkPos, GridPos}` and `manager::DEBUG_FIXED_CHUNK_GRID` aren't
 // re-exported right now — nothing outside `world` needs them yet (the

@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use crate::config::world::RENDER_DISTANCE;
 use crate::playing::{PlayerCamera, PlayingScreen};
 
-use super::chunk::{ChunkPos, ChunkTile, CHUNK_SIZE};
+use super::chunk::{ChunkData, ChunkPos, ChunkTile, AIR, CHUNK_SIZE, WATER};
 use super::generator::{generate_chunk, make_terrain_noise, TerrainNoise};
 use super::mesher::build_chunk_mesh;
 use super::ChunkWireframe;
@@ -23,10 +23,10 @@ pub(crate) const DEBUG_FIXED_CHUNK_GRID: bool = false;
 
 fn fixed_debug_chunks() -> [ChunkPos; 4] {
     [
-        ChunkPos::new(0, 0),
-        ChunkPos::new(1, 0),
-        ChunkPos::new(0, 1),
-        ChunkPos::new(1, 1),
+        ChunkPos::new(0, 0, 0),
+        ChunkPos::new(1, 0, 0),
+        ChunkPos::new(0, 0, 1),
+        ChunkPos::new(1, 0, 1),
     ]
 }
 
@@ -45,9 +45,24 @@ const CHUNKS_PER_FRAME: usize = 4;
 /// FPS hit for as long as it keeps happening. See `docs/performance.md`.
 const SWITCH_MARGIN: f32 = 2.0;
 
+/// A chunk's spawned entity plus the raw block data it was meshed from. The
+/// data used to be discarded right after meshing, but collision (see
+/// `docs/player-physics.md`) needs to query "is this block solid" at
+/// runtime, not just render it — so it's kept for *every* loaded chunk,
+/// whether or not that chunk has any visible geometry. `entity` is `None`
+/// for a chunk whose mesh came out with zero triangles (fully buried, every
+/// face touching another opaque block — normal for anything more than a
+/// layer or two underground, see `docs/world-generation.md`): there's
+/// nothing to render, so nothing gets spawned, but the block data still
+/// needs to exist for the player to be able to stand on/dig into it later.
+struct LoadedChunk {
+    entity: Option<Entity>,
+    data: ChunkData,
+}
+
 #[derive(Resource)]
 pub struct ChunkManager {
-    loaded: HashMap<ChunkPos, Entity>,
+    loaded: HashMap<ChunkPos, LoadedChunk>,
     pending: Vec<ChunkPos>,
     last_player_chunk: Option<ChunkPos>,
     noise: TerrainNoise,
@@ -68,6 +83,32 @@ impl Default for ChunkManager {
             noise: make_terrain_noise(1337),
             material: None,
         }
+    }
+}
+
+impl ChunkManager {
+    /// Whether the block at this world-grid coordinate blocks player
+    /// movement. `false` (walkable) for `AIR`, for `WATER` (opaque-looking
+    /// but not physically solid — see `chunk::is_opaque` for the *rendering*
+    /// question, which is different), and for any chunk that isn't currently
+    /// loaded — a player standing right at the render-distance edge could
+    /// otherwise collide with a chunk that doesn't exist yet, which would be
+    /// worse than just letting them through until it loads.
+    pub fn is_solid(&self, block: IVec3) -> bool {
+        let chunk_pos = ChunkPos::new(
+            block.x.div_euclid(CHUNK_SIZE as i32),
+            block.y.div_euclid(CHUNK_SIZE as i32),
+            block.z.div_euclid(CHUNK_SIZE as i32),
+        );
+        let Some(chunk) = self.loaded.get(&chunk_pos) else {
+            return false;
+        };
+
+        let local_x = block.x.rem_euclid(CHUNK_SIZE as i32) as usize;
+        let local_y = block.y.rem_euclid(CHUNK_SIZE as i32) as usize;
+        let local_z = block.z.rem_euclid(CHUNK_SIZE as i32) as usize;
+        let id = chunk.data.get(local_x, local_y, local_z);
+        id != AIR && id != WATER
     }
 }
 
@@ -114,6 +155,8 @@ fn resolve_player_chunk(last: Option<ChunkPos>, world_pos: Vec3) -> ChunkPos {
         let size = CHUNK_SIZE as f32;
         let still_inside = world_pos.x >= origin.x - SWITCH_MARGIN
             && world_pos.x < origin.x + size + SWITCH_MARGIN
+            && world_pos.y >= origin.y - SWITCH_MARGIN
+            && world_pos.y < origin.y + size + SWITCH_MARGIN
             && world_pos.z >= origin.z - SWITCH_MARGIN
             && world_pos.z < origin.z + size + SWITCH_MARGIN;
         if still_inside {
@@ -123,11 +166,20 @@ fn resolve_player_chunk(last: Option<ChunkPos>, world_pos: Vec3) -> ChunkPos {
     ChunkPos::from_world_pos(world_pos)
 }
 
+/// The desired chunk set: a `RENDER_DISTANCE`-radius square of columns
+/// around the player, same as before, but now for every vertical layer from
+/// the player's own chunk down to `RENDER_DISTANCE` layers *below* it — not
+/// above, since there's no floating terrain to render there yet (a layer
+/// above would just generate pure air and immediately get skipped anyway,
+/// see `load_pending_chunks`, but there's no reason to even try). See
+/// `docs/world-generation.md`.
 fn recompute_desired_chunks(manager: &mut ChunkManager, current: ChunkPos, commands: &mut Commands) {
     let mut desired: HashSet<ChunkPos> = HashSet::default();
     for dx in -RENDER_DISTANCE..=RENDER_DISTANCE {
         for dz in -RENDER_DISTANCE..=RENDER_DISTANCE {
-            desired.insert(ChunkPos::new(current.x + dx, current.z + dz));
+            for dy in -RENDER_DISTANCE..=0 {
+                desired.insert(ChunkPos::new(current.x + dx, current.y + dy, current.z + dz));
+            }
         }
     }
 
@@ -138,8 +190,10 @@ fn recompute_desired_chunks(manager: &mut ChunkManager, current: ChunkPos, comma
         .copied()
         .collect();
     for pos in to_unload {
-        if let Some(entity) = manager.loaded.remove(&pos) {
-            commands.entity(entity).despawn();
+        if let Some(chunk) = manager.loaded.remove(&pos) {
+            if let Some(entity) = chunk.entity {
+                commands.entity(entity).despawn();
+            }
         }
     }
 
@@ -183,20 +237,31 @@ fn load_pending_chunks(
         let data = generate_chunk(pos, &manager.noise);
         let mesh = build_chunk_mesh(&data);
 
-        let mut entity_commands = commands.spawn((
-            PlayingScreen,
-            ChunkTile(pos),
-            Mesh3d(meshes.add(mesh)),
-            MeshMaterial3d(material.clone()),
-            Transform::from_translation(pos.world_origin()),
-        ));
-        // Newly-generated chunks (e.g. from flying into unexplored terrain
-        // while the toggle is already on) should match the current setting,
-        // not always start plain — see `input::playing::toggle_terrain_wireframe`.
-        if wireframe_enabled {
-            entity_commands.insert(Wireframe);
-        }
+        // A fully buried chunk (every face touching another opaque block —
+        // normal a layer or two underground, since there are no caves yet)
+        // meshes to zero triangles. Nothing to render, so nothing gets
+        // spawned; `data` is still kept (see `LoadedChunk`) for collision.
+        let has_geometry = mesh.indices().is_some_and(|indices| indices.len() > 0);
 
-        manager.loaded.insert(pos, entity_commands.id());
+        let entity = if has_geometry {
+            let mut entity_commands = commands.spawn((
+                PlayingScreen,
+                ChunkTile(pos),
+                Mesh3d(meshes.add(mesh)),
+                MeshMaterial3d(material.clone()),
+                Transform::from_translation(pos.world_origin()),
+            ));
+            // Newly-generated chunks (e.g. from flying into unexplored terrain
+            // while the toggle is already on) should match the current setting,
+            // not always start plain — see `input::playing::toggle_terrain_wireframe`.
+            if wireframe_enabled {
+                entity_commands.insert(Wireframe);
+            }
+            Some(entity_commands.id())
+        } else {
+            None
+        };
+
+        manager.loaded.insert(pos, LoadedChunk { entity, data });
     }
 }

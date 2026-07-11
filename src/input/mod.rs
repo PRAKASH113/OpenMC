@@ -4,6 +4,7 @@ use bevy::prelude::*;
 
 use crate::app::states::{GameState, PauseState};
 use crate::config::controls::KeyBinds;
+use crate::playing::ControlMode;
 
 pub struct InputPlugin;
 
@@ -15,10 +16,18 @@ impl Plugin for InputPlugin {
                 Update,
                 (
                     playing::movement_and_look.run_if(
-                        in_state(GameState::Playing).and_then(in_state(PauseState::Unpaused)),
+                        in_state(GameState::Playing)
+                            .and_then(in_state(PauseState::Unpaused))
+                            .and_then(in_state(ControlMode::Dev)),
+                    ),
+                    playing::player_movement_and_look.run_if(
+                        in_state(GameState::Playing)
+                            .and_then(in_state(PauseState::Unpaused))
+                            .and_then(in_state(ControlMode::Player)),
                     ),
                     playing::toggle_pause.run_if(in_state(GameState::Playing)),
                     playing::toggle_terrain_wireframe.run_if(in_state(GameState::Playing)),
+                    playing::toggle_control_mode.run_if(in_state(GameState::Playing)),
                 ),
             )
             .add_systems(OnEnter(GameState::Playing), playing::lock_cursor)

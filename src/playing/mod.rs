@@ -1,3 +1,4 @@
+mod player;
 mod sky;
 mod sun;
 mod world;
@@ -14,7 +15,8 @@ use sky::{SkyMaterial, SkyUniform, SKY_DOME_RADIUS};
 use sun::SunCube;
 use world::MAX_SURFACE_HEIGHT;
 
-pub(crate) use world::{ChunkTile, ChunkWireframe};
+pub(crate) use player::{collision_size, resolve_movement, ControlMode, Grounded, PlayerVelocity};
+pub(crate) use world::{ChunkManager, ChunkTile, ChunkWireframe};
 
 /// Bevy's `GlobalAmbientLight` default (`brightness: 80.0`) is tiny next to
 /// the sun's `illuminance: 6000.0` — faces with no direct line to the sun
@@ -77,7 +79,11 @@ impl Plugin for PlayingPlugin {
             brightness: AMBIENT_BRIGHTNESS,
             ..default()
         })
-            .add_plugins((MaterialPlugin::<SkyMaterial>::default(), world::WorldPlugin))
+            .add_plugins((
+                MaterialPlugin::<SkyMaterial>::default(),
+                world::WorldPlugin,
+                player::PlayerPlugin,
+            ))
             .add_systems(OnEnter(GameState::Playing), setup)
             .add_systems(OnExit(GameState::Playing), teardown)
             .add_systems(
@@ -108,6 +114,8 @@ fn setup(
             yaw: INITIAL_YAW,
             pitch: INITIAL_PITCH,
         },
+        PlayerVelocity::default(),
+        Grounded::default(),
         Transform::from_translation(initial_camera_pos()).with_rotation(initial_rotation),
         DistanceFog {
             color: fog_color(),

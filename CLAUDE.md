@@ -32,15 +32,16 @@ A Minecraft-like voxel sandbox game written in Rust using the **Bevy** game engi
 | `src/input/` | The entire control scheme. |
 | `src/loading/`, `src/menu/` | Placeholder 2D screens (stubs). |
 | `src/paused/` | Pause overlay, layered on top of Playing. |
-| `src/playing/` | The 3D scene: camera, sky dome, sun, chunked terrain (`world/`) at full `RENDER_DISTANCE = 4`. |
+| `src/playing/` | The 3D scene: camera, sky dome, sun, chunked terrain (`world/`, stone/grass/sand/water, chunks stacking vertically below the surface) at `RENDER_DISTANCE = 4`, and `player.rs` (`ControlMode` Dev/Player, gravity, collision, crosshair). |
 | `src/dev_tools/` | Single performance HUD (FPS, frame time, triangle count, a `PlayingScreen`-scoped game-entity count, CPU/mem). |
 
 ## Documentation Index
 
 - [`docs/architecture.md`](docs/architecture.md) — state machine (`GameState`/`PauseState`), why pause layers on top of Playing instead of replacing it, module responsibilities.
 - [`docs/sky-and-sun.md`](docs/sky-and-sun.md) — sky dome + sun design; reconnected, see `docs/performance-investigation.md`.
-- [`docs/world-generation.md`](docs/world-generation.md) — the chunk manager/generator/binary-greedy-mesher pipeline; one entity per chunk, never one per block. Fully reconnected at `RENDER_DISTANCE = 4`.
+- [`docs/world-generation.md`](docs/world-generation.md) — the chunk manager/generator/binary-greedy-mesher pipeline; one entity per chunk, never one per block. Real block types (stone/grass/sand/water) and vertical chunk stacking below the surface, with buried chunks skipping entity spawn entirely once their mesh comes out empty.
 - [`docs/controls.md`](docs/controls.md) — keybinds, mouse look, pause toggle.
+- [`docs/player-physics.md`](docs/player-physics.md) — `ControlMode` (Dev/Player), the collision box, gravity/jump tuning, and the swept-AABB collision resolver (including a real tunneling bug its test suite caught before ever running in-game).
 - [`docs/performance.md`](docs/performance.md) — the diagnostics HUD, optimizations made so far and why, candidates not yet done.
 - [`docs/optimisations.md`](docs/optimisations.md) — forward-looking optimization roadmap (vertex packing, instancing, indirect draw batching); on hold, see `docs/performance-investigation.md`.
 - [`docs/performance-investigation.md`](docs/performance-investigation.md) — **active**: the Playing scene was stripped to a baseline to isolate a real FPS-crash bug, confirmed healthy, and rebuilt back up one piece at a time (sky dome → single chunk → full render distance), checking stats and visual quality after each step.
