@@ -91,9 +91,9 @@ fn log_state_change<S: States>(mut transitions: MessageReader<StateTransitionEve
 /// Delete this table and [`debug_jump_to_state`] once real transitions exist.
 #[cfg(debug_assertions)]
 const DEBUG_JUMPS: [(KeyCode, GameState); 3] = [
-    (KeyCode::Digit1, GameState::Loading),
-    (KeyCode::Digit2, GameState::Menu),
-    (KeyCode::Digit3, GameState::InGame),
+    (crate::config::input::DEBUG_GOTO_LOADING, GameState::Loading),
+    (crate::config::input::DEBUG_GOTO_MENU, GameState::Menu),
+    (crate::config::input::DEBUG_GOTO_INGAME, GameState::InGame),
 ];
 
 /// Applies the [`DEBUG_JUMPS`] shortcuts. Debug builds only.

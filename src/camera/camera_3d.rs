@@ -16,6 +16,7 @@ use bevy::render::view::Msaa;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 use crate::app::{GameState, InGameState};
+use crate::config::input;
 
 /// Marks the camera that renders the world.
 #[derive(Component)]
@@ -43,16 +44,10 @@ const ORDER: isize = 0;
 /// Where the camera starts, looking back at the origin.
 const START_POSITION: Vec3 = Vec3::new(8.0, 6.0, 16.0);
 
-/// Movement speed in units per second.
-const MOVE_SPEED: f32 = 12.0;
-
-/// Multiplier applied while the sprint key is held.
-const SPRINT_MULTIPLIER: f32 = 3.0;
-
-/// Radians of rotation per pixel of mouse movement.
-const LOOK_SENSITIVITY: f32 = 0.002;
-
 /// How close to straight up/down the pitch may get.
+///
+/// A safety limit rather than a preference — past vertical the view flips
+/// over — so it stays here instead of in [`crate::config::input`].
 const PITCH_LIMIT: f32 = FRAC_PI_2 - 0.01;
 
 /// Spawns the world camera and flies it.
@@ -108,9 +103,9 @@ fn look(
 
     let mut moved = false;
     for event in motion.read() {
-        angles.yaw -= event.delta.x * LOOK_SENSITIVITY;
-        angles.pitch =
-            (angles.pitch - event.delta.y * LOOK_SENSITIVITY).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        angles.yaw -= event.delta.x * input::LOOK_SENSITIVITY;
+        angles.pitch = (angles.pitch - event.delta.y * input::LOOK_SENSITIVITY)
+            .clamp(-PITCH_LIMIT, PITCH_LIMIT);
         moved = true;
     }
 
@@ -138,22 +133,22 @@ fn fly(
     let right = *transform.right();
 
     let mut direction = Vec3::ZERO;
-    if keys.pressed(KeyCode::KeyW) {
+    if keys.pressed(input::FORWARD) {
         direction += forward;
     }
-    if keys.pressed(KeyCode::KeyS) {
+    if keys.pressed(input::BACKWARD) {
         direction -= forward;
     }
-    if keys.pressed(KeyCode::KeyD) {
+    if keys.pressed(input::RIGHT) {
         direction += right;
     }
-    if keys.pressed(KeyCode::KeyA) {
+    if keys.pressed(input::LEFT) {
         direction -= right;
     }
-    if keys.pressed(KeyCode::Space) {
+    if keys.pressed(input::UP) {
         direction += Vec3::Y;
     }
-    if keys.pressed(KeyCode::ControlLeft) {
+    if keys.pressed(input::DOWN) {
         direction -= Vec3::Y;
     }
 
@@ -163,10 +158,10 @@ fn fly(
         return;
     };
 
-    let speed = if keys.pressed(KeyCode::ShiftLeft) {
-        MOVE_SPEED * SPRINT_MULTIPLIER
+    let speed = if keys.pressed(input::SPRINT) {
+        input::MOVE_SPEED * input::SPRINT_MULTIPLIER
     } else {
-        MOVE_SPEED
+        input::MOVE_SPEED
     };
 
     transform.translation += direction * speed * time.delta_secs();

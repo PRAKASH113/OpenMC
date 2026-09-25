@@ -19,13 +19,16 @@ to quietly undo.
 | Layout | One top-level folder per state | Each state owns everything belonging to it, so work on one never touches another. |
 | Layout | `main.rs` holds only `mod` declarations and crate attributes | Setup belongs in `app`. The only reason to reopen it is adding a module. |
 | Layout | `app` submodules are private; only `GameState` is re-exported | One path to the type, and misuse of `app` internals fails to compile. |
+| Layout | Every configurable value lives in `config/`, grouped by what it configures | One answer to "where do I change a setting?". A new category is a new file, not a decision. |
+| Layout | `utils/` holds *finished* adapters between settings and the engine | The bar is completeness, not size — anything still growing a design belongs with its domain. Keeps `app/` to composition and state only. |
+| Input | All key bindings live in `config/input.rs`, never inline in a system | One visible set, and a test can then prove no key is bound twice. Split from `config` by kind: `config` is engine/startup, `input` is player controls. |
 | Config | `config.rs` is `pub const` values only — no structs | It is a settings surface meant to be read in seconds. Revisit only when values must load from disk at startup. |
 | Config | Bevy enums used directly (`PresentMode`), never mirrored | A copy would lose the fallback semantics and need updating whenever Bevy's enum grows. "Let Bevy decide" is the *value* `AutoVsync`, not a separate mode. |
 | Window | `BORDERLESS` is stored as the inverse of Bevy's `decorations` | Bevy models "draw the title bar"; the inversion happens once, at the boundary in `window.rs`. |
 | Window | `present_mode` is applied in `window.rs` | It is a property of Bevy's `Window`, not of a render plugin. |
 | Camera | One persistent camera, owned outside the states | State screens spawn only their own content and never contend over the view. |
 | States | Each state's screen is self-contained; duplication is intentional | The four are meant to diverge completely; a shared abstraction would have to be torn out. |
-| States | `Paused` is a sub-state of `InGame`, not a sibling | Makes "paused with no world loaded" unrepresentable instead of guarded at runtime. See [`INGAME_FOUNDATION.md`](INGAME_FOUNDATION.md). |
+| States | `Paused` is a sub-state of `InGame`, not a sibling | Makes "paused with no world loaded" unrepresentable instead of guarded at runtime. See the States section of [`ARCHITECTURE.md`](ARCHITECTURE.md). |
 | Rendering | The UI camera does not clear; the world camera does | The UI draws after the world, so clearing there would erase it. States without a world camera must paint an opaque background. |
 | Logging | Log config lives in `app/log.rs`, not `main.rs` | `LogPlugin` is configured *on* `DefaultPlugins`, which happens in `AppPlugin`. Routing it through `main.rs` would mean plumbing settings down only to hand them back. |
 | Logging | Filters build on `DEFAULT_FILTER` rather than replacing it | Bevy's own defaults survive; ours stay additive. |
@@ -138,6 +141,66 @@ Modularity: matches the `app` pattern — the folder exposes `CameraPlugin` and
 nothing else.* A `pub(crate) use camera_2d::UiCamera;` re-export was tried and
 reverted: nothing imports it yet, so it was just an unused import. Add it when
 a real consumer appears.
+
+**Key bindings centralised in `input/`.** Eleven bindings that were inline
+`KeyCode` literals across `camera_3d.rs`, `pause.rs`, and `states.rs` are now
+named constants in one module, with a test asserting no key is bound to two
+actions. `LOOK_SENSITIVITY`, `MOVE_SPEED`, and `SPRINT_MULTIPLIER` moved there
+too, as player-tunable settings. *Perf: none — constants inline identically.
+Modularity/reading: a key clash was previously only findable by grepping three
+files; it is now a failing test. Camera draw order and the pitch clamp
+deliberately stayed in `camera_3d` — the first is a rendering detail, the
+second a safety limit, and neither is a preference.*
+
+**Runtime window toggles.** Added `FULLSCREEN` alongside `BORDERLESS` in
+config (both start `false`), bound `F10`/`F11` in `input/`, and added
+`WindowControlPlugin` in `app/window.rs` to mutate the live `Window`
+component. *Perf: two systems doing a single `just_pressed` check per frame —
+negligible, and they early-return before touching the window query. Nothing
+re-creates the window; Bevy applies the component change. Modularity: window
+vocabulary stayed in `app/window.rs`, keys stayed in `input/`, config holds
+only starting values — each of the three files gained the part that belongs
+to it.*
+
+**Settings unified into `config/`, adapters split into `utils/`.**
+`app/config.rs` became `config/window.rs`, `input/mod.rs` became
+`config/input.rs`, and `app/log.rs` and `app/window.rs` moved to `utils/`.
+`app/` now holds only `plugin.rs` and `states.rs`. `input/` is kept as an
+empty signpost module reserved for future input behaviour. *Perf: none — pure
+module reorganisation, identical codegen. Readability: settings had two homes
+and now have one; `app/` dropped from six files to three, leaving only the
+parts that shape how the game is assembled.*
+
+Recorded because it was discussed and decided rather than assumed: a `utils/`
+folder is normally an anti-pattern, because "miscellaneous" has no membership
+test and becomes a junk drawer. It was adopted here with an explicit bar —
+**finished adapters only, completeness rather than size** — written into
+`utils/mod.rs` so the criterion travels with the folder. Revisit if anything
+lands there that is still growing a design.
+
+**`camera_2d` renamed to `camera_ui`.** The module and its plugin
+(`Camera2dPlugin` -> `UiCameraPlugin`) now say what the camera is *for*. It
+only ever drew the UI, and "2d" suggested it depended on the `2d` engine
+feature, which it does not. The module doc now explains why a UI camera is
+built from Bevy's `Camera2d` component, since that is exactly the confusion
+the old name caused. Moved with `git mv` so history follows the file. *Perf:
+none. Readability: the name matches the `UiCamera` marker it spawns.*
+
+**`unsafe_code` deny moved from `Cargo.toml` to `main.rs`.** The `[lints]`
+table is valid Cargo, but the "Even Better TOML" extension shows a false error
+for it that no manifest edit can clear. As a crate attribute it is equivalent
+for this single crate. *Perf: none. Readability: no false error for anyone
+opening the manifest. Cost: `[lints]` would also cover future `tests/`,
+benches, and workspace members, which the attribute does not — so it moves
+back when those exist.* See `AUDIT.md` 4.6 for the full diagnosis, including
+the first attempt that did not work.
+
+**Stale documentation corrected.** `ARCHITECTURE.md` still described `Paused`
+as a flat sibling of `InGame`, debug keys `1`-`4`, every state as a flat
+colour, the 3D camera as not yet existing, an `input/` folder, and an
+`ingame/screen.rs` that was deleted. All rewritten against the code, and a
+link to the removed `INGAME_FOUNDATION.md` was repointed. *Readability: a doc
+that contradicts the code is worse than no doc.*
 
 ---
 

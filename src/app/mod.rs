@@ -1,17 +1,16 @@
-//! Application assembly: startup configuration, the window, logging, the
-//! state machine, and the plugin that wires everything together.
+//! Application assembly: the state machine, and the plugin that wires every
+//! part of the game together.
 //!
-//! Gameplay domains live in their own top-level modules and are registered
-//! from [`plugin::AppPlugin`]. Nothing gameplay-related belongs here.
+//! Only the shape of the app lives here. Configurable values are in
+//! [`crate::config`], and the finished adapters that build the window and
+//! configure logging are in [`crate::utils`]. Gameplay domains live in their
+//! own top-level modules and are registered from [`plugin::AppPlugin`].
 
-// Every submodule is `app`'s own business — they reach each other through
-// `super::`. The single thing the rest of the crate needs is `GameState`,
-// re-exported below so there is exactly one path to it.
-mod config;
-mod log;
+// Both submodules are `app`'s own business — they reach each other through
+// `super::`. The only things the rest of the crate needs are the two state
+// types, re-exported below so there is exactly one path to them.
 mod plugin;
 mod states;
-mod window;
 
 pub(crate) use states::{GameState, InGameState};
 

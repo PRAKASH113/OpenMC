@@ -13,16 +13,20 @@ reasoning behind it.
 ```text
 src/
 ├── main.rs              # The only loose file: module declarations, calls app::run
-├── app/                 # App assembly
+├── app/                 # How the game is assembled
 │   ├── mod.rs           #   run()
-│   ├── config.rs        #   Window/startup settings (plain data)
-│   ├── window.rs        #   config -> Bevy WindowPlugin translation
-│   ├── log.rs           #   Log filters
-│   ├── states.rs        #   GameState enum + GameStatePlugin
+│   ├── states.rs        #   GameState + InGameState + GameStatePlugin
 │   └── plugin.rs        #   AppPlugin: the composition root
+├── config/              # Every configurable value, grouped by what it configures
+│   ├── window.rs        #   Title, size, borderless, fullscreen, present mode
+│   └── input.rs         #   Key bindings, sensitivity, speed
+├── utils/               # Finished adapters between our settings and the engine
+│   ├── window.rs        #   Builds the window; runtime borderless/fullscreen
+│   └── log.rs           #   Log filters
 ├── camera/
 │   ├── mod.rs           #   CameraPlugin: registers every camera
-│   └── camera_2d.rs     #   The UI camera
+│   ├── camera_ui.rs     #   The UI camera (menus, screens, HUD)
+│   └── camera_3d.rs     #   The world camera, look and fly controls
 ├── loading/
 │   ├── mod.rs           #   LoadingPlugin
 │   └── screen.rs
@@ -31,7 +35,8 @@ src/
 │   └── screen.rs
 ├── ingame/
 │   ├── mod.rs           #   InGamePlugin
-│   └── screen.rs
+│   ├── scene.rs         #   The 3D scene
+│   └── pause.rs         #   Escape toggles Playing <-> Paused
 └── paused/
     ├── mod.rs           #   PausedPlugin
     └── screen.rs
@@ -80,45 +85,54 @@ belongs in data layout and query design, not here.
 `InGame`. `Loading` is the default, so it is what the game starts in.
 `GameStatePlugin` in the same module installs it.
 
-`InGameState` (`Playing` / `Paused`) is a **sub-state** of `GameState::InGame`
-— Bevy creates it on entering that state and removes it on leaving, so
-pausing outside a loaded world is unrepresentable rather than merely
-discouraged. See [`INGAME_FOUNDATION.md`](INGAME_FOUNDATION.md).
+`InGameState` (`Playing` / `Paused`) is a **sub-state** of `GameState::InGame`.
+Bevy inserts it on entering that state and removes it on leaving, so pausing
+outside a loaded world is unrepresentable rather than merely discouraged —
+there is no state to write to. No code guards this; the `#[source(...)]`
+attribute on the enum is the whole enforcement.
 
-Each variant has a matching top-level module owning what that state shows and
-what runs while it is active. A state's module registers its systems against
-`OnEnter`/`OnExit` for its own variant, so adding behaviour to a state means
-working inside that state's folder and nowhere else. The four plugins are
-registered in `AppPlugin` alongside everything else.
+Each state has a matching module owning what it shows and what runs while it
+is active, registered against `OnEnter`/`OnExit` for its own variant, so
+adding behaviour to a state means working inside that state's folder and
+nowhere else. `paused/` keys off `InGameState::Paused` rather than a
+`GameState` variant.
 
-`Paused` is currently a sibling of `InGame` in one flat enum. If pausing
-later needs the in-game world to keep existing while its systems stop,
-Bevy's `SubStates` is the tool for that — worth revisiting then, not now.
+Only two places in the crate ever change state: `ingame::pause::toggle`
+(Escape, `Playing` <-> `Paused`) and the debug jump keys below. Nothing
+transitions `Loading -> Menu` yet — see `AUDIT.md`.
 
-### Placeholder screens
+### Screens
 
-Every state currently renders the same shape of thing: a full-screen colour
-with the state's name on it, in that state's own `screen.rs`. Each owns its
-colour, label, and marker component, so the four are independent — they are
-meant to diverge completely as real content arrives, and none of them should
-grow a shared abstraction on the way there.
+`loading/` and `menu/` render a placeholder: a full-screen opaque colour with
+the state's name. `paused/` renders a *translucent* overlay, because the world
+is still loaded underneath and showing it is what distinguishes pausing from
+leaving. `ingame/` renders the 3D scene rather than a screen. Each owns its
+own marker component, so they are independent and meant to diverge
+completely as real content arrives.
 
-Two temporary pieces to delete later, both marked in the source:
+Temporary pieces to delete later, both marked in the source:
 
-- `app::states::debug_jump_to_state` — number keys `1`-`4` jump straight to a
-  state, since nothing drives transitions yet.
-- The placeholder screens themselves.
-
-The camera is deliberately **not** part of this. `camera::CameraPlugin`
-registers cameras that are spawned at startup and outlive every state, so
-state screens only spawn their own content and never contend over the view.
+- `app::states::debug_jump_to_state` — keys `1`-`3` jump to `Loading`,
+  `Menu`, `InGame`. There is deliberately no key for `Paused`; it is only
+  reachable by pausing. Debug builds only.
+- The placeholder screens in `loading/` and `menu/`.
 
 ## Cameras
 
-`camera.rs` registers one plugin per camera kind. Today that is only
-`camera_2d`, which renders the UI. The 3D camera for the voxel world drops in
-as `camera/camera_3d.rs` with its own plugin added to the tuple in
-`CameraPlugin` — no other file changes.
+`camera/mod.rs` registers one plugin per camera kind:
+
+- `camera_ui` draws the interface. Spawned at startup, lives for the whole
+  run, `order: 1`, no MSAA, and it does **not** clear the screen. It is built
+  from Bevy's `Camera2d` component, but it is a UI camera rather than a 2D
+  game camera — nothing draws sprites through it.
+- `camera_3d` renders the world. Spawned on entering `InGame` and despawned
+  on leaving, so nothing 3D renders while in a menu. `order: 0`, `Sample4`
+  MSAA, and it does the clearing.
+
+Draw order is the one contract between them: the UI sits above the world.
+Because the UI camera never clears, **any state without a world camera must
+paint an opaque full-screen background** — `loading/` and `menu/` do — or
+bring its own camera.
 
 ## Startup configuration
 
@@ -145,11 +159,60 @@ Bevy's `WindowPlugin`, keeping every engine-shaped detail in one place:
 - Present mode is a property of `Window`, not of a render plugin, so it is
   applied here too.
 
-These constants describe **startup** only. Window size, present mode and
-decorations are all live-mutable on the `Window` component, so a settings
-menu would change that component directly and persist to its own file rather
-than touching these. Constants become a struct the day something needs to
-load them from disk at startup — not before.
+These constants describe **startup** only. Window size, present mode, mode
+and decorations are all live-mutable on the `Window` component, so anything
+changing them later mutates that component directly rather than touching
+these. `app::window::WindowControlPlugin` already does exactly that for the
+borderless and fullscreen toggles — the constants set where the window
+starts, the systems change it afterwards.
+
+Constants become a struct the day something needs to load them from disk at
+startup — not before.
+
+Two details in those toggles worth knowing. Fullscreen uses
+`BorderlessFullscreen` rather than exclusive `Fullscreen`: it alt-tabs
+instantly and does not change the display's video mode, which is what a
+modern game is expected to do. And leaving fullscreen explicitly restores
+`WIDTH` x `HEIGHT`, so the config values double as the remembered windowed
+size. The toggles are deliberately not gated on any game state — being able
+to leave fullscreen should not depend on where the player is in the game.
+
+## Configuration
+
+`config/` is the single answer to "where do I change a setting?". It holds
+plain values only, grouped by what they configure — `window.rs` for the
+window, `input.rs` for controls — and adding a category later (graphics,
+audio) means adding a file, not making a decision.
+
+Nothing in `config/` knows about the engine beyond the types a value needs.
+Turning values into engine settings belongs to whoever consumes them.
+
+`config::input` holds every key binding, so the full set is visible at once
+and systems call `keys.pressed(input::FORWARD)` rather than naming a
+`KeyCode` inline. A unit test there fails if two actions share a key. It
+checks a hand-maintained list, so it is only as complete as whoever last
+added a binding — that cost was accepted to keep the constants plainly
+readable rather than generated by a macro.
+
+Values that are not player-facing settings stay with their owner: camera draw
+order is a rendering detail, and the pitch clamp is a safety limit rather than
+a taste setting, so both live in `camera_3d`.
+
+There is no `input/` module yet. When input *behaviour* arrives — action
+mapping, rebinding, gamepad support — it gets one, and `config::input` keeps
+holding the values it reads. Bindings are settings; interpreting them is
+behaviour.
+
+## Utilities
+
+`utils/` holds modules that adapt our settings to the engine and are
+*finished*: `window.rs` creates the window and owns the runtime borderless
+and fullscreen toggles, `log.rs` decides which log targets print.
+
+The bar for belonging there is completeness, not size — a module still
+growing a design belongs with the domain it serves. Keeping them out of
+`app/` leaves that folder holding only the parts that shape how the game is
+assembled: the composition root and the state machine.
 
 ## Logging
 

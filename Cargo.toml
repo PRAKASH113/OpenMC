@@ -7,15 +7,67 @@ rust-version = "1.98.1"
 
 [dependencies]
 # ── Bevy: the whole engine. Renderer, ECS, windowing, input, assets, UI,
-#    and the logging system (bevy_log -> tracing). This single crate pulls in
-#    everything you listed: 3D rendering + UI + logging.
+#    and the logging system (bevy_log -> tracing).
+#
+#    Default features are ["2d", "3d", "ui", "audio"]. Three of those carry
+#    things this game never touches. The replacements below are written out
+#    and left commented: enabling one recompiles all of Bevy, so it is worth
+#    doing at the same time as the next dependency change rather than on its
+#    own. Uncomment ONE of them, not several.
 bevy = "0.19"
 
+# ── Step 1: drop audio. Safe, and the easiest win. ───────────────────────
+#    `audio` pulls in `bevy_audio` plus `vorbis`, an Ogg decoder. The game
+#    plays no sound and has no audio code at all, so all of it is compiled,
+#    linked, and shipped for nothing.
+#
+# bevy = { version = "0.19", default-features = false, features = [
+#     "2d",
+#     "3d",
+#     "ui",
+# ] }
+
+# ── Step 2: also drop 2d. Very likely safe — verify with one compile. ────
+#    `2d` exists for sprite-based games: it adds `bevy_sprite` and
+#    `bevy_sprite_render`. This game spawns no `Sprite`, ever.
+#
+#    The reason this looks safe despite using `Camera2d`: the Core2d render
+#    pass lives in `bevy_core_pipeline`, which the `ui` feature already
+#    brings in via `ui_bevy_render`. So the UI camera keeps working without
+#    `2d`. That was read off the feature graph rather than tested, so give it
+#    one compile and check the UI still draws before trusting it.
+#
+# bevy = { version = "0.19", default-features = false, features = [
+#     "3d",
+#     "ui",
+# ] }
+
+# ── Step 3 (bigger, riskier): 3d without glTF. ───────────────────────────
+#    The `3d` umbrella hardcodes `bevy_gltf` and `gltf_animation`. This game
+#    loads no models — its meshes are generated in code — so that is a large
+#    unused dependency. But `3d` cannot be kept while dropping glTF; the
+#    sub-features (`3d_api`, `bevy_pbr`, `bevy_core_pipeline`, `bevy_render`,
+#    `bevy_anti_alias`, `bevy_post_process`, ...) have to be listed by hand.
+#    Worth doing once build time actually hurts, not before.
+
+# ── Dev-only build speedup, not enabled here ─────────────────────────────
+#    `bevy/dynamic_linking` links Bevy as a shared library so it is not
+#    re-linked on every build. It is a large iteration win and must never
+#    ship in release. Prefer passing it per-command rather than writing it
+#    into this file:
+#
+#        cargo run --features bevy/dynamic_linking
+
 # ── Faster iterative builds ──────────────────────────────────────────────
-# Your own code compiles at opt-level 1 (fast to build, still tolerable to run),
-# but all dependencies (Bevy, wgpu, etc.) get full optimization since you
-# compile them once and then never again. Without this, debug builds of a
-# voxel game run at ~2 FPS.
+# Our own code is unoptimised so it compiles fast, while dependencies (Bevy,
+# wgpu) get full optimisation — they are compiled once and then cached, so
+# the cost is paid a single time. Without the second block, debug builds of a
+# voxel game run at a few FPS because Bevy itself is unoptimised.
+#
+# NOTE for later: `opt-level = 0` is right while our code does almost nothing.
+# Chunk meshing and terrain generation are tight numeric loops that commonly
+# run 10-50x slower unoptimised, and they will be *our* code. Expect to raise
+# this to 1 once they exist, and measure rather than guess.
 [profile.dev]
 opt-level = 0
 debug = "line-tables-only"
@@ -29,7 +81,11 @@ lto = "thin" # use "fat" for realeases
 codegen-units = 1
 strip = "symbols" # drops debug symbols; shrinks the binary a lot
 
-
 # ── Lints ───────────────────────────────────────────────────────────────
 [lints.rust]
 unsafe_code = "deny"
+# `unsafe_code = "deny"` is set as `#![deny(unsafe_code)]` in src/main.rs
+# rather than a `[lints.rust]` table here. The table is valid Cargo, but the
+# "Even Better TOML" extension (0.21.x) fails to follow the schema's
+# cross-file reference for it and shows a false error. See main.rs for when to
+# move it back.

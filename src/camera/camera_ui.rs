@@ -1,7 +1,12 @@
-//! The 2D camera, which renders the UI.
+//! The UI camera: menus, screens, and later the HUD are drawn through it.
 //!
 //! It is spawned once at startup and lives for the whole run, so state
 //! screens only spawn their own content and never contend over the view.
+//!
+//! It is built from Bevy's `Camera2d` component, but it is not a 2D game
+//! camera — nothing here draws sprites, and the `2d` engine feature is not
+//! needed for it. `Camera2d` is simply the camera kind Bevy renders UI
+//! through; the render pass it needs comes with the `ui` feature.
 
 use bevy::prelude::*;
 use bevy::render::view::Msaa;
@@ -20,10 +25,10 @@ pub struct UiCamera;
 /// without either camera having to know about the other.
 const ORDER: isize = 1;
 
-/// Spawns and owns the 2D camera.
-pub struct Camera2dPlugin;
+/// Spawns and owns the UI camera.
+pub struct UiCameraPlugin;
 
-impl Plugin for Camera2dPlugin {
+impl Plugin for UiCameraPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_ui_camera);
     }

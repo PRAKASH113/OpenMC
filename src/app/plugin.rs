@@ -8,9 +8,10 @@ use crate::loading::LoadingPlugin;
 use crate::menu::MenuPlugin;
 use crate::paused::PausedPlugin;
 
-use super::log::log_plugin;
+use crate::utils::log::log_plugin;
+use crate::utils::window::{WindowControlPlugin, primary_window_plugin};
+
 use super::states::GameStatePlugin;
-use super::window::primary_window_plugin;
 
 /// Assembles the whole game.
 ///
@@ -31,7 +32,7 @@ impl Plugin for AppPlugin {
         );
 
         // Infrastructure every state relies on.
-        app.add_plugins((GameStatePlugin, CameraPlugin));
+        app.add_plugins((GameStatePlugin, CameraPlugin, WindowControlPlugin));
 
         // One plugin per game state.
         app.add_plugins((LoadingPlugin, MenuPlugin, InGamePlugin, PausedPlugin));

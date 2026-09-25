@@ -8,6 +8,7 @@
 use bevy::prelude::*;
 
 use crate::app::InGameState;
+use crate::config::input;
 
 /// Flips between playing and paused on Escape.
 ///
@@ -18,7 +19,7 @@ pub fn toggle(
     current: Res<State<InGameState>>,
     mut next: ResMut<NextState<InGameState>>,
 ) {
-    if !keys.just_pressed(KeyCode::Escape) {
+    if !keys.just_pressed(input::PAUSE) {
         return;
     }
 
