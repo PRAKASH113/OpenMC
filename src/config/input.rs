@@ -4,7 +4,7 @@
 //! is visible at once. The test at the bottom fails if two actions are bound
 //! to the same key, so that is caught rather than left to careful reading.
 //!
-//! This is a settings surface like [`crate::app::config`] — plain values,
+//! This is a settings surface like [`crate::config::window`] — plain values,
 //! meant to be read and edited. Values that are *not* player preferences
 //! stay with the code that owns them: camera draw order is a rendering
 //! detail, and the pitch clamp is a safety limit, not a taste setting.
@@ -85,26 +85,38 @@ mod tests {
     /// whoever last added a binding — add new keys here as well as above.
     /// Keeping the constants plainly readable was judged worth that cost
     /// over a macro that generates both.
-    const ALL: &[(&str, KeyCode)] = &[
-        ("FORWARD", FORWARD),
-        ("BACKWARD", BACKWARD),
-        ("LEFT", LEFT),
-        ("RIGHT", RIGHT),
-        ("UP", UP),
-        ("DOWN", DOWN),
-        ("SPRINT", SPRINT),
-        ("PAUSE", PAUSE),
-        ("TOGGLE_BORDERLESS", TOGGLE_BORDERLESS),
-        ("TOGGLE_FULLSCREEN", TOGGLE_FULLSCREEN),
-        ("DEBUG_GOTO_LOADING", DEBUG_GOTO_LOADING),
-        ("DEBUG_GOTO_MENU", DEBUG_GOTO_MENU),
-        ("DEBUG_GOTO_INGAME", DEBUG_GOTO_INGAME),
-    ];
+    fn all_bindings() -> Vec<(&'static str, KeyCode)> {
+        let mut all = vec![
+            ("FORWARD", FORWARD),
+            ("BACKWARD", BACKWARD),
+            ("LEFT", LEFT),
+            ("RIGHT", RIGHT),
+            ("UP", UP),
+            ("DOWN", DOWN),
+            ("SPRINT", SPRINT),
+            ("PAUSE", PAUSE),
+            ("TOGGLE_BORDERLESS", TOGGLE_BORDERLESS),
+            ("TOGGLE_FULLSCREEN", TOGGLE_FULLSCREEN),
+        ];
+
+        // The debug keys only exist in debug builds, so they can only clash
+        // with anything there — and naming them unconditionally is what
+        // broke `cargo test --release`.
+        #[cfg(debug_assertions)]
+        all.extend([
+            ("DEBUG_GOTO_LOADING", DEBUG_GOTO_LOADING),
+            ("DEBUG_GOTO_MENU", DEBUG_GOTO_MENU),
+            ("DEBUG_GOTO_INGAME", DEBUG_GOTO_INGAME),
+        ]);
+
+        all
+    }
 
     #[test]
     fn no_key_is_bound_to_two_actions() {
-        for (index, (name, key)) in ALL.iter().enumerate() {
-            for (other_name, other_key) in &ALL[index + 1..] {
+        let all = all_bindings();
+        for (index, (name, key)) in all.iter().enumerate() {
+            for (other_name, other_key) in &all[index + 1..] {
                 assert_ne!(
                     key, other_key,
                     "`{name}` and `{other_name}` are both bound to {key:?}"

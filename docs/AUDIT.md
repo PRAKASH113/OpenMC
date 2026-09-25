@@ -8,9 +8,9 @@ for you to accept, reject, or defer.
 file records ones still *open*. When something here is acted on, it should
 move there.
 
-Current size: 1,079 lines of Rust across 20 files. Largest file is
-`camera/camera_3d.rs` at 189 lines. Nothing is close to the 800-line limit,
-so none of these are urgent.
+Current size: 1,241 lines of Rust across 22 files. Largest file is
+`camera/camera_world.rs` at 237 lines (including its tests). Nothing is close
+to the 800-line limit, so none of these are urgent.
 
 ---
 
@@ -143,53 +143,36 @@ Both were confirmed to be leaf plugins (no Bevy crate depends on
 
 ## Tier 2 — Readability and discoverability
 
-### 2.1 The folder structure disagrees with the state machine
+All four tier 2 items are resolved. Details are in `IMPROVEMENTS.md`.
 
-**The most substantive finding in this file.**
+### 2.1 The folder structure disagreed with the state machine — **done**
 
-`paused/` sits at the top level of `src/`, as a sibling of `ingame/`. But
-`Paused` is a *sub-state* of `InGame` — that was the whole point of the
-sub-state change. So the code says "paused lives inside in-game" while the
-folders say "paused is a peer of in-game."
+`paused/` now lives at `states/ingame/paused/`, inside its parent, so the
+folder layout mirrors the state hierarchy it implements.
 
-Someone new reading the folder tree would reasonably conclude they are
-independent states. Moving it to `ingame/paused/` would make the layout
-mirror the state hierarchy it already implements.
+### 2.2 Camera modules named by technology, not purpose — **done**
 
-### 2.2 Camera modules are named by technology, not purpose — **half done**
+`camera_2d.rs` became `camera_ui.rs` and `camera_3d.rs` became
+`camera_world.rs` (plugins `UiCameraPlugin` and `WorldCameraPlugin`). Both are
+now named for what they show.
 
-`camera_2d.rs` is now `camera_ui.rs` (plugin `UiCameraPlugin`), because it
-was never a 2D game camera — it only draws the UI, and calling it "2d" made
-it look like it needed the `2d` engine feature.
+### 2.3 Settings lived in two unrelated places — **done**
 
-`camera_3d.rs` keeps its name for now. It does render in 3D, so the name is
-not wrong, but it now sits beside a purpose-named sibling. `camera_world.rs`
-would make the pair consistent. Left as a question, since "3d" is accurate
-and matches how the cameras were originally described.
+`config/` holds `window.rs` and `input.rs`; a new category is a new file.
 
-### 2.3 Settings live in two unrelated places — **done**
+### 2.4 Top-level `src/` mixed states with infrastructure — **done**
 
-Resolved: `config/` now holds `window.rs` and `input.rs`, and a new category
-is a new file. See `IMPROVEMENTS.md`.
-
-### 2.4 Top-level `src/` mixes states with infrastructure
-
-`src/` holds `app/`, `camera/`, `config/`, `utils/` (infrastructure)
-alongside `loading/`, `menu/`, `ingame/`, `paused/` (states), with nothing
-marking which is which. At eight folders it is still readable. With `world/`,
-`render/`, and `player/` added it becomes ten-plus, and the distinction
-blurs.
-
-You explicitly rejected nesting the states under `states/`, so this is **not**
-a re-proposal of that. It is a flag that the thing that made you reject it —
-wanting each state to own a real folder — is compatible with grouping later
-if the top level gets crowded. Worth watching rather than acting on.
+Every state now lives under `states/`, each in its own folder, together with
+the state machine in `states/mod.rs`. The top level is five folders of
+infrastructure plus `states/`, and a new state never adds a top-level folder.
+This keeps the one-folder-per-state property that was asked for originally;
+what changed is that the folders gained a common parent.
 
 ---
 
 ## Tier 3 — Modularity
 
-### 3.1 `camera_3d.rs` contains a player controller
+### 3.1 `camera_world.rs` contains a player controller
 
 At 189 lines it is the largest file, and it holds two different categories:
 camera *setup* (spawn, order, MSAA, despawn) and player *input handling*
@@ -222,13 +205,9 @@ It returns as a real module when input behaviour (rebinding, gamepad) exists.
 
 ## Tier 4 — Everything else
 
-### 4.1 Commit the restructure — **partly resolved**
+### 4.1 Version control — **resolved**
 
-There is now one commit (`chore: initialize openmc_b repository`), so history
-exists. But everything since — the `config/`/`utils/` split, the camera
-rename, the audit, the lint move — is uncommitted, and several files show as
-deleted relative to that commit. The working tree has drifted a long way from
-the only snapshot.
+Work is committed regularly now, so this is no longer tracked here.
 
 ### 4.2 Runtime verification — **partly done**
 
@@ -241,11 +220,12 @@ Still unconfirmed by eye: camera feel, mouse sensitivity (`0.002`), move speed
 (`12.0`), both window toggles, the translucent pause overlay, and whether the
 UI camera's non-clearing causes artefacts in `Menu`/`Loading`.
 
-### 4.3 `Loading` never advances
+### 4.3 `Loading` never advanced — **done**
 
-Nothing transitions `Loading → Menu`. In a debug build you escape with the
-`2` key; in a **release** build there are no debug keys, so the game would
-sit on the loading screen permanently. This is the first real gameplay gap.
+`states/loading` now has a `finish` system that moves to `Menu` once boot
+loading is done — today on the first frame, since there is nothing to load.
+Release builds no longer sit on the loading screen forever. The fuller
+loading design (world generation, soft loading) is in `LOADING.md`.
 
 ### 4.4 Almost no tests
 

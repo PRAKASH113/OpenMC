@@ -58,16 +58,20 @@ The code is organized by game domain, with one Bevy plugin per domain:
 
 ```text
 src/
-├── main.rs      # Entry point — wires the app together, nothing else
-├── app/         # App setup, game states, plugin registration
-├── config/      # Settings: window, key bindings
-├── camera/      # UI camera and 3D world camera
-├── loading/     # Loading screen state
-├── menu/        # Main menu state
-├── ingame/      # The actual game world
-├── paused/      # Pause screen state
-└── utils/       # Small shared helpers
+├── main.rs          # Entry point — declares modules, hands off to app
+├── app/             # Wires every plugin together and runs the game
+├── states/          # The state machine, and one folder per game state
+│   ├── loading/     #   Startup loading screen
+│   ├── menu/        #   Main menu
+│   └── ingame/      #   The game world
+│       └── paused/  #     Pause screen (a sub-state of in-game)
+├── camera/          # UI camera and world camera
+├── config/          # Settings: window, key bindings
+└── utils/           # Small finished helpers (window setup, logging)
 ```
+
+Game states live under `states/`, and a sub-state sits inside its parent's
+folder, so the tree shows how the states relate.
 
 For more detail, see the docs folder:
 
@@ -75,6 +79,8 @@ For more detail, see the docs folder:
 - [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md) — why the code is the way it
   is, including decisions that were reversed
 - [docs/AUDIT.md](docs/AUDIT.md) — known improvements that are not done yet
+- [docs/LOADING.md](docs/LOADING.md) — how loading works now, and the plan
+  for world generation and loading overlays
 
 ## Contributing
 

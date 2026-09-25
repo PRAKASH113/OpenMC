@@ -16,11 +16,11 @@ to quietly undo.
 | --- | --- | --- |
 | Dependencies | `encase*` pinned to `0.12.1` in `Cargo.lock` | `0.12.2` moved to `syn 3` while `bevy_macro_utils` is on `syn 2`, breaking `bevy_encase_derive`. Do not `cargo update -p encase` past this until upstream fixes it. |
 | Layout | `mod.rs` module style | Every module here has submodules, so the sibling-file style pairs each folder with a file and doubles the tree. Bevy is written this way too. |
-| Layout | One top-level folder per state | Each state owns everything belonging to it, so work on one never touches another. |
+| Layout | Every state lives under `states/`, one folder each; a sub-state's folder sits inside its parent's | The top level separates states from infrastructure, and the folders mirror the state hierarchy — `paused/` is in `ingame/` because `Paused` is a sub-state of `InGame`. |
 | Layout | `main.rs` holds only `mod` declarations and crate attributes | Setup belongs in `app`. The only reason to reopen it is adding a module. |
-| Layout | `app` submodules are private; only `GameState` is re-exported | One path to the type, and misuse of `app` internals fails to compile. |
+| Layout | The state machine lives in `states/mod.rs`; each state folder is private to it | Someone looking for `GameState` finds it where the states are. `app/` keeps only `run()` and the composition root. |
 | Layout | Every configurable value lives in `config/`, grouped by what it configures | One answer to "where do I change a setting?". A new category is a new file, not a decision. |
-| Layout | `utils/` holds *finished* adapters between settings and the engine | The bar is completeness, not size — anything still growing a design belongs with its domain. Keeps `app/` to composition and state only. |
+| Layout | `utils/` holds *finished* adapters between settings and the engine | The bar is completeness, not size — anything still growing a design belongs with its domain. Keeps `app/` to composition only. |
 | Performance | Rare triggers are run conditions, not `if`s inside systems | The system is skipped outright when its trigger is absent — no query fetch, no body. |
 | Performance | Per-frame systems exit on the common case before querying or doing maths | At `opt-level = 0`, inlined glam maths runs unoptimised in our crate. Skipping it beats speeding it up. |
 | Performance | `AudioPlugin` and `GilrsPlugin` are disabled at runtime | No sound and no controllers exist. Both are leaf plugins. Re-enable Gilrs for controller support; delete the Audio line when the `audio` feature is dropped. |
@@ -31,6 +31,7 @@ to quietly undo.
 | Window | `present_mode` is applied in `window.rs` | It is a property of Bevy's `Window`, not of a render plugin. |
 | Camera | One persistent camera, owned outside the states | State screens spawn only their own content and never contend over the view. |
 | States | Each state's screen is self-contained; duplication is intentional | The four are meant to diverge completely; a shared abstraction would have to be torn out. |
+| States | `Loading` is boot loading only | World generation is planned as `InGame`'s first sub-state and soft loading as a counted overlay, not a state. See [`LOADING.md`](LOADING.md). |
 | States | `Paused` is a sub-state of `InGame`, not a sibling | Makes "paused with no world loaded" unrepresentable instead of guarded at runtime. See the States section of [`ARCHITECTURE.md`](ARCHITECTURE.md). |
 | Rendering | The UI camera does not clear; the world camera does | The UI draws after the world, so clearing there would erase it. States without a world camera must paint an opaque background. |
 | Logging | Log config lives in `app/log.rs`, not `main.rs` | `LogPlugin` is configured *on* `DefaultPlugins`, which happens in `AppPlugin`. Routing it through `main.rs` would mean plumbing settings down only to hand them back. |
@@ -49,6 +50,9 @@ not re-proposed as if it were new.
 | `u16` for window width/height | `u32` | The 8 bytes saved are meaningless for a struct built once, and `u16` invites an overflow footgun (`1280 * 720` does not fit) plus a cast at every Bevy boundary. |
 | Sibling-file modules (`menu.rs` + `menu/`) | `mod.rs` style | Every module here has submodules, so the sibling style doubled the tree for no benefit. |
 | All states nested under `states/` | One top-level folder per state | Each state should own its own folder rather than being a file in a shared one. |
+| One top-level folder per state | Every state under `states/`, still one folder each | The top level had started mixing states with infrastructure. Grouping kept the folder-per-state property that was the original point. |
+| `paused/` as a top-level sibling of `ingame/` | `states/ingame/paused/` | The folders now say what the state machine already said: `Paused` exists inside `InGame`. |
+| `camera_2d` / `camera_3d` | `camera_ui` / `camera_world` | Named for what each camera shows rather than how it renders. |
 | Shared `states/screen.rs` helper | Per-state `screen.rs` | Self-contained states were preferred over DRY, since the screens are placeholders meant to diverge. |
 | `Paused` as a `GameState` variant | `InGameState::Paused` sub-state | Enforcing "only pausable from in-game" structurally beats a runtime guard. Done once `InGame` owned real resources, as planned. |
 | `ingame/screen.rs` placeholder | `ingame/scene.rs` | The flat colour was scaffolding; the 3D scene replaces it. |
@@ -220,6 +224,29 @@ sub-states transition, scene spawns.*
 feature removes `bevy_sprite`. It does not: `bevy_ui` depends on `bevy_sprite`
 directly, so only `bevy_sprite_render` goes. Step 2 is still worth doing
 alongside Step 1, but it is a small win, and the comment now says so.
+
+**Tier 2 restructure: states grouped, camera renamed.** Every state moved
+under `states/`, with the state machine in `states/mod.rs` (formerly
+`app/states.rs`) and `paused/` inside `ingame/`. `camera_3d.rs` became
+`camera_world.rs` (plugin `WorldCameraPlugin`). Registration now nests the
+same way as the folders: `AppPlugin` adds `GameStatePlugin`, which adds the
+top-level states, and `InGamePlugin` adds `PausedPlugin`. All moves used
+`git mv`. *Perf: none — module reorganisation only. Readability: the top
+level is now five infrastructure folders plus `states/`; the state hierarchy
+is visible in the tree; both cameras are named for what they show; adding a
+state touches only its parent's `mod.rs`.*
+
+**`Loading` now exits to `Menu`.** A `finish` system gated on
+`in_state(Loading)` moves on once boot loading is done — today on the first
+frame. Before this, a release build (no debug keys) sat on the loading screen
+forever. The wider loading design is written up in `LOADING.md` rather than
+built.
+
+**`cargo test --release` fixed.** The key-uniqueness test named the three
+debug keys unconditionally, but they only exist in debug builds, so the test
+failed to compile in release. The debug entries are now added under
+`#[cfg(debug_assertions)]`. The bug predated this change; it surfaced when
+the release lint was run with `--all-targets`.
 
 ---
 

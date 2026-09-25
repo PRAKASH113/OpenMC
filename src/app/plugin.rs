@@ -3,15 +3,9 @@
 use bevy::prelude::*;
 
 use crate::camera::CameraPlugin;
-use crate::ingame::InGamePlugin;
-use crate::loading::LoadingPlugin;
-use crate::menu::MenuPlugin;
-use crate::paused::PausedPlugin;
-
+use crate::states::GameStatePlugin;
 use crate::utils::log::log_plugin;
 use crate::utils::window::{WindowControlPlugin, primary_window_plugin};
-
-use super::states::GameStatePlugin;
 
 /// Assembles the whole game.
 ///
@@ -48,10 +42,8 @@ impl Plugin for AppPlugin {
                 .disable::<bevy::gilrs::GilrsPlugin>(),
         );
 
-        // Infrastructure every state relies on.
+        // Our domains. `GameStatePlugin` brings in every state itself, so
+        // adding a state never touches this file — only `states/mod.rs`.
         app.add_plugins((GameStatePlugin, CameraPlugin, WindowControlPlugin));
-
-        // One plugin per game state.
-        app.add_plugins((LoadingPlugin, MenuPlugin, InGamePlugin, PausedPlugin));
     }
 }

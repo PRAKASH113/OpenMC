@@ -7,7 +7,7 @@
 
 use bevy::prelude::*;
 
-use crate::app::InGameState;
+use crate::states::InGameState;
 
 /// Flips between playing and paused.
 ///

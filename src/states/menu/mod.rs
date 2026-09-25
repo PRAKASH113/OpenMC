@@ -2,11 +2,11 @@
 //!
 //! Everything this state owns lives in `menu/`.
 
-pub mod screen;
+mod screen;
 
 use bevy::prelude::*;
 
-use crate::app::GameState;
+use crate::states::GameState;
 
 /// Owns what the game shows and runs in the menu.
 pub struct MenuPlugin;

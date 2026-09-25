@@ -12,40 +12,51 @@ reasoning behind it.
 
 ```text
 src/
-├── main.rs              # The only loose file: module declarations, calls app::run
-├── app/                 # How the game is assembled
-│   ├── mod.rs           #   run()
-│   ├── states.rs        #   GameState + InGameState + GameStatePlugin
-│   └── plugin.rs        #   AppPlugin: the composition root
-├── config/              # Every configurable value, grouped by what it configures
-│   ├── window.rs        #   Title, size, borderless, fullscreen, present mode
-│   └── input.rs         #   Key bindings, sensitivity, speed
-├── utils/               # Finished adapters between our settings and the engine
-│   ├── window.rs        #   Builds the window; runtime borderless/fullscreen
-│   └── log.rs           #   Log filters
+├── main.rs                  # The only loose file: module declarations, crate attributes
+├── app/                     # How the game is assembled
+│   ├── mod.rs               #   run()
+│   └── plugin.rs            #   AppPlugin: the composition root
+├── states/                  # The state machine and every state
+│   ├── mod.rs               #   GameState, InGameState, GameStatePlugin
+│   ├── loading/             #   Boot loading (solid), exits to Menu
+│   │   ├── mod.rs
+│   │   └── screen.rs
+│   ├── menu/
+│   │   ├── mod.rs
+│   │   └── screen.rs
+│   └── ingame/              #   A loaded world
+│       ├── mod.rs
+│       ├── scene.rs         #     The 3D scene
+│       ├── pause.rs         #     Escape toggles Playing <-> Paused
+│       └── paused/          #     Sub-state: lives inside its parent
+│           ├── mod.rs
+│           └── screen.rs
 ├── camera/
-│   ├── mod.rs           #   CameraPlugin: registers every camera
-│   ├── camera_ui.rs     #   The UI camera (menus, screens, HUD)
-│   └── camera_3d.rs     #   The world camera, look and fly controls
-├── loading/
-│   ├── mod.rs           #   LoadingPlugin
-│   └── screen.rs
-├── menu/
-│   ├── mod.rs           #   MenuPlugin
-│   └── screen.rs
-├── ingame/
-│   ├── mod.rs           #   InGamePlugin
-│   ├── scene.rs         #   The 3D scene
-│   └── pause.rs         #   Escape toggles Playing <-> Paused
-└── paused/
-    ├── mod.rs           #   PausedPlugin
-    └── screen.rs
+│   ├── mod.rs               #   CameraPlugin: registers every camera
+│   ├── camera_ui.rs         #   Draws the interface
+│   └── camera_world.rs      #   Renders the world; look and fly controls
+├── config/                  # Every configurable value, grouped by what it configures
+│   ├── window.rs            #   Title, size, borderless, fullscreen, present mode
+│   └── input.rs             #   Key bindings, sensitivity, speed
+└── utils/                   # Finished adapters between our settings and the engine
+    ├── window.rs            #   Builds the window; runtime borderless/fullscreen
+    └── log.rs               #   Log filters
 ```
 
-Each state is a top-level module that owns everything belonging to it, so
-work on one state never touches another's files. `app/states.rs` declares the
-`GameState` enum and registers the state machine; it deliberately knows
-nothing about what any individual state contains.
+**The top level separates states from infrastructure.** Everything under
+`states/` is a place the player can be; everything beside it is machinery
+that serves every state. A new state never adds a top-level folder.
+
+**Inside `states/`, the folders mirror the state hierarchy.** A top-level
+state gets a folder in `states/`; a sub-state gets a folder *inside its
+parent's* — which is why `paused/` is in `ingame/`. The layout and the state
+machine describe the same shape, so neither can drift from the other
+without it being visible.
+
+**Registration follows the same nesting.** `AppPlugin` adds
+`GameStatePlugin`; that adds the machine plus the top-level states; each
+state adds its own sub-states (`InGamePlugin` adds `PausedPlugin`). Adding a
+state touches its parent's `mod.rs` and nothing above it.
 
 `main.rs` stays deliberately thin. It holds only what Rust requires the crate
 root to hold: `mod` declarations for top-level modules, and crate-level
@@ -81,9 +92,14 @@ belongs in data layout and query design, not here.
 
 ## States
 
-`app::states::GameState` is the top-level state machine: `Loading`, `Menu`,
-`InGame`. `Loading` is the default, so it is what the game starts in.
-`GameStatePlugin` in the same module installs it.
+`states::GameState` is the top-level state machine: `Loading`, `Menu`,
+`InGame`. `Loading` is the default, so it is what the game starts in, and it
+moves on to `Menu` by itself once boot loading is done — today that is the
+first frame, since there is nothing to load yet. `GameStatePlugin` in the
+same module installs the machine and every state.
+
+`Loading` is *boot* loading only. World generation and the soft loading
+overlay are designed but not built; see [`LOADING.md`](LOADING.md).
 
 `InGameState` (`Playing` / `Paused`) is a **sub-state** of `GameState::InGame`.
 Bevy inserts it on entering that state and removes it on leaving, so pausing
@@ -97,9 +113,10 @@ adding behaviour to a state means working inside that state's folder and
 nowhere else. `paused/` keys off `InGameState::Paused` rather than a
 `GameState` variant.
 
-Only two places in the crate ever change state: `ingame::pause::toggle`
-(Escape, `Playing` <-> `Paused`) and the debug jump keys below. Nothing
-transitions `Loading -> Menu` yet — see `AUDIT.md`.
+Only three places in the crate change state: `states::loading::finish`
+(`Loading -> Menu`), `states::ingame::pause::toggle` (Escape,
+`Playing <-> Paused`), and the debug jump keys below. Nothing transitions
+`Menu -> InGame` except the debug key yet — that waits for a real menu.
 
 ### Screens
 
@@ -112,9 +129,10 @@ completely as real content arrives.
 
 Temporary pieces to delete later, both marked in the source:
 
-- `app::states::debug_jump_to_state` — keys `1`-`3` jump to `Loading`,
-  `Menu`, `InGame`. There is deliberately no key for `Paused`; it is only
-  reachable by pausing. Debug builds only.
+- `states::debug_jump_to_state` — keys `1`-`3` jump to `Loading`, `Menu`,
+  `InGame`. There is deliberately no key for `Paused`; it is only reachable
+  by pausing. Jumping to `Loading` bounces straight back to `Menu`, since
+  loading has nothing to wait for. Debug builds only.
 - The placeholder screens in `loading/` and `menu/`.
 
 ## Cameras
@@ -125,9 +143,12 @@ Temporary pieces to delete later, both marked in the source:
   run, `order: 1`, no MSAA, and it does **not** clear the screen. It is built
   from Bevy's `Camera2d` component, but it is a UI camera rather than a 2D
   game camera — nothing draws sprites through it.
-- `camera_3d` renders the world. Spawned on entering `InGame` and despawned
-  on leaving, so nothing 3D renders while in a menu. `order: 0`, `Sample4`
-  MSAA, and it does the clearing.
+- `camera_world` renders the world. Spawned on entering `InGame` and
+  despawned on leaving, so nothing 3D renders while in a menu. `order: 0`,
+  `Sample4` MSAA, and it does the clearing.
+
+Both are named for *what they show*, not how they render — `camera_ui` and
+`camera_world` rather than 2D and 3D.
 
 Draw order is the one contract between them: the UI sits above the world.
 Because the UI camera never clears, **any state without a world camera must
@@ -196,7 +217,7 @@ readable rather than generated by a macro.
 
 Values that are not player-facing settings stay with their owner: camera draw
 order is a rendering detail, and the pitch clamp is a safety limit rather than
-a taste setting, so both live in `camera_3d`.
+a taste setting, so both live in `camera_world`.
 
 There is no `input/` module yet. When input *behaviour* arrives — action
 mapping, rebinding, gamepad support — it gets one, and `config::input` keeps
@@ -230,7 +251,7 @@ Log configuration lives beside the window translation rather than in
 happen where the plugin group is built, and `main.rs` deliberately holds no
 setup.
 
-`app::states::log_state_change` logs every state transition, skipping
+`states::log_state_change` logs every state transition, skipping
 identity transitions.
 
 ## Decisions

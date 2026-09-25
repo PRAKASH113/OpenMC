@@ -19,10 +19,7 @@
 mod app;
 mod camera;
 mod config;
-mod ingame;
-mod loading;
-mod menu;
-mod paused;
+mod states;
 mod utils;
 
 use bevy::prelude::AppExit;

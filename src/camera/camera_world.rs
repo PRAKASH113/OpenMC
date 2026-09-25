@@ -1,4 +1,5 @@
-//! The 3D camera that renders the world, and the controls that fly it.
+//! The world camera: the 3D view the player sees through, and the controls
+//! that fly it.
 //!
 //! Unlike the UI camera this one is tied to a loaded world: it is spawned on
 //! entering [`GameState::InGame`] and despawned on leaving, so no 3D view is
@@ -15,8 +16,8 @@ use bevy::prelude::*;
 use bevy::render::view::Msaa;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
-use crate::app::{GameState, InGameState};
 use crate::config::input;
+use crate::states::{GameState, InGameState};
 
 /// Marks the camera that renders the world.
 #[derive(Component)]
@@ -51,9 +52,9 @@ const START_POSITION: Vec3 = Vec3::new(8.0, 6.0, 16.0);
 const PITCH_LIMIT: f32 = FRAC_PI_2 - 0.01;
 
 /// Spawns the world camera and flies it.
-pub struct Camera3dPlugin;
+pub struct WorldCameraPlugin;
 
-impl Plugin for Camera3dPlugin {
+impl Plugin for WorldCameraPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(GameState::InGame), spawn_world_camera)
             .add_systems(OnExit(GameState::InGame), despawn_world_camera)

@@ -1,14 +1,14 @@
-//! The paused state: gameplay suspended with the world still loaded.
+//! The paused sub-state: gameplay suspended with the world still loaded.
 //!
 //! Keyed off [`InGameState::Paused`], so this can only ever appear over a
-//! loaded world. Escape is handled in [`crate::ingame`], which owns the
-//! toggle in both directions.
+//! loaded world — and it lives inside `ingame/` for the same reason. The
+//! Escape toggle is in the parent module, which owns both directions of it.
 
-pub mod screen;
+mod screen;
 
 use bevy::prelude::*;
 
-use crate::app::InGameState;
+use crate::states::InGameState;
 
 /// Owns what the game shows while paused.
 pub struct PausedPlugin;

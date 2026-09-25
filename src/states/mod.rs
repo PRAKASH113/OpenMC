@@ -1,20 +1,35 @@
-//! The game's state machine.
+//! The game's states: the state machine, and one folder per state.
 //!
 //! [`GameState`] is where the player is. [`InGameState`] is what is
 //! happening inside a loaded world, and only exists while [`GameState`] is
 //! [`GameState::InGame`] — so "paused with no world loaded" is not a state
 //! the program can represent.
 //!
-//! What each state *does* lives in its own top-level module
-//! ([`crate::loading`], [`crate::menu`], [`crate::ingame`],
-//! [`crate::paused`]), so adding behaviour never means editing this file.
+//! The folder layout mirrors that hierarchy. Each top-level state has a
+//! folder here, and a sub-state lives *inside* its parent's folder — which
+//! is why `paused/` is in `ingame/`. What a state shows and runs lives in
+//! its own folder, so adding behaviour to a state never means editing this
+//! file.
+
+mod ingame;
+mod loading;
+mod menu;
 
 use bevy::prelude::*;
+
+use ingame::InGamePlugin;
+use loading::LoadingPlugin;
+use menu::MenuPlugin;
 
 /// Where the player is.
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum GameState {
-    /// Assets are loading; nothing is interactive yet.
+    /// Solid loading at startup: preparing what the game needs before the
+    /// menu can appear. Moves on to [`GameState::Menu`] by itself once done.
+    ///
+    /// This is *boot* loading only. Generating a world belongs inside
+    /// [`GameState::InGame`] as its first sub-state, because the world must
+    /// exist while it is being built — see `docs/ARCHITECTURE.md`.
     #[default]
     Loading,
     /// Main menu.
@@ -39,11 +54,16 @@ pub enum InGameState {
     Paused,
 }
 
-/// Installs the state machine.
+/// Installs the state machine and every state.
+///
+/// Each state folder registers its own children in turn — `ingame` registers
+/// `paused` — so this lists only the top level.
 pub struct GameStatePlugin;
 
 impl Plugin for GameStatePlugin {
     fn build(&self, app: &mut App) {
+        // The machine first: every state plugin below registers systems
+        // against these states' schedules.
         app.init_state::<GameState>()
             .add_sub_state::<InGameState>()
             .add_systems(
@@ -53,6 +73,8 @@ impl Plugin for GameStatePlugin {
                     log_state_change::<InGameState>,
                 ),
             );
+
+        app.add_plugins((LoadingPlugin, MenuPlugin, InGamePlugin));
 
         // Debug-only, so a shipped build cannot teleport between states on
         // a keypress.
@@ -87,6 +109,10 @@ fn log_state_change<S: States>(mut transitions: MessageReader<StateTransitionEve
 /// [`InGameState::Paused`] is deliberately absent — it is only reachable by
 /// pausing while in a world, which is the whole point of it being a
 /// sub-state.
+///
+/// Jumping to [`GameState::Loading`] bounces straight back to the menu,
+/// because loading currently has nothing to wait for. That is still useful:
+/// it exercises the `Loading -> Menu` exit.
 ///
 /// Delete this table and [`debug_jump_to_state`] once real transitions exist.
 #[cfg(debug_assertions)]
