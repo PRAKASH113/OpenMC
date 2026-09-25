@@ -75,31 +75,69 @@ Bevy's `dynamic_linking` feature is the other standard dev speedup — it
 links Bevy as a shared library so it is not re-linked each time. It is
 dev-only and must not ship in release.
 
-### 1.3 `opt-level = 0` will hurt once real voxel code exists
+### 1.3 `opt-level = 0` — **kept deliberately; code written to suit it**
 
-**Runtime.** `[profile.dev]` compiles *our* crate at `opt-level = 0` while
-dependencies get `3`. That is the right trade today, because our code does
-almost nothing.
+Decision: stays at `0` for now, raised later. Until then, per-frame code is
+written so unoptimised builds pay as little as possible — see the conventions
+added to `CLAUDE.md` and item 1.4.
 
-It stops being right the moment chunk meshing and terrain generation land —
-that kind of tight numeric loop commonly runs 10–50x slower unoptimised, and
-it will be our code, not Bevy's. Expect to need `opt-level = 1` for this
-crate, and note the comment in `Cargo.toml` already claims level 1 while the
-value says 0. **That comment is currently wrong** and worth fixing whichever
-way you decide.
+The key fact that shapes this: glam's maths functions are `#[inline]`, and an
+inline function is compiled into the *calling* crate at the *caller's*
+opt-level. So vector and quaternion maths inside our systems runs fully
+unoptimised, even though Bevy and glam themselves are built at `opt-level 3`.
+The cheapest defence is not running that maths on frames that do not need it.
 
-### 1.4 Per-frame systems that could be event-driven
+Still true for later: chunk meshing and terrain generation are tight numeric
+loops that commonly run 10–50x slower unoptimised, so expect to raise this to
+`1` once they exist — and measure rather than guess. The `Cargo.toml` comment
+that contradicted the setting has been fixed.
 
-**Runtime, small.** Six systems run every frame purely to check whether a key
-was pressed: `toggle_borderless`, `toggle_fullscreen`, `pause::toggle`,
-`debug_jump_to_state`, and two `log_state_change` instances reading usually
-empty message queues.
+### 1.4 Per-frame systems that could be event-driven — **done**
 
-Each is genuinely cheap — a bitset check or a cursor comparison. The honest
-assessment is that this is *not* currently a performance problem and
-consolidating them would cost modularity for no measurable gain. It is listed
-so it is on the record as considered, not as a recommendation. Revisit only if
-a profiler says so.
+Every system that runs each frame was reviewed, including Bevy's own plugins.
+
+**Converted to run conditions** — the system is skipped outright on every
+frame without its trigger, so there is no query fetch and no body:
+
+- `toggle_borderless` / `toggle_fullscreen` — `run_if(input_just_pressed(..))`
+- `pause::toggle` — `in_state(InGame).and_then(input_just_pressed(PAUSE))`.
+  `and_then` short-circuits, so the key is only checked inside a world.
+  (`.and()` is deprecated in this Bevy version.)
+
+**Reordered so the common case exits first:**
+
+- `fly` reads the six movement keys *before* querying the camera or doing any
+  maths. Standing still now costs six key lookups; previously it also did a
+  camera query and two quaternion rotations (`forward()`, `right()`) every
+  frame. The key-to-axis logic moved into a plain `axis()` function with unit
+  tests, including that opposing keys cancel.
+- `look` sums the frame's mouse deltas and returns before the query if the
+  sum is zero. It also now does one angle update and one quaternion rebuild
+  per frame, however many motion events arrived. Side effect: pitch is clamped
+  once on the summed movement rather than per event, which is if anything
+  more faithful to what the mouse actually did.
+
+**Two engine plugins disabled** at runtime in `AppPlugin` — no Bevy recompile:
+
+- `AudioPlugin` — no sound exists, but it opened an output device and kept an
+  audio thread alive all session.
+- `GilrsPlugin` — no controller support exists, but it polled the OS for
+  gamepad events every frame.
+
+Both were confirmed to be leaf plugins (no Bevy crate depends on
+`bevy_audio` or `bevy_gilrs`), and a 15-second run showed a clean startup.
+
+**Considered and deliberately left:**
+
+- `log_state_change` — an `on_message` run condition would perform the same
+  empty-queue check the system already does, so it would save nothing.
+- `debug_jump_to_state` — three key lookups, debug builds only. Chaining three
+  run conditions would cost more than it saves.
+- Picking, animation, gizmos, scene and sprite plugins also run per-frame
+  systems over empty queries. They were not disabled: `bevy_ui` depends on
+  `bevy_sprite`, glTF loading depends on the animation and scene plugins, and
+  menu buttons will soon need picking. Disabling them is a feature-level job
+  (see 1.1), not a runtime one.
 
 ---
 
@@ -192,11 +230,16 @@ rename, the audit, the lint move — is uncommitted, and several files show as
 deleted relative to that commit. The working tree has drifted a long way from
 the only snapshot.
 
-### 4.2 Nothing has been run
+### 4.2 Runtime verification — **partly done**
 
-The 3D scene, camera feel, mouse sensitivity, both window toggles, and the
-clear-colour behaviour in `Menu`/`Loading` have never been seen on screen.
-Sensitivity (`0.002`) and move speed (`12.0`) in particular are guesses.
+A 15-second run confirmed: clean startup with no panics, errors or warnings;
+the Vulkan loader noise is filtered; audio and gilrs are gone; and the path
+`Loading -> Menu -> InGame -> Playing` works, including the 3D scene spawning
+and the sub-state logging.
+
+Still unconfirmed by eye: camera feel, mouse sensitivity (`0.002`), move speed
+(`12.0`), both window toggles, the translucent pause overlay, and whether the
+UI camera's non-clearing causes artefacts in `Menu`/`Loading`.
 
 ### 4.3 `Loading` never advances
 

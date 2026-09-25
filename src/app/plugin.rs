@@ -28,7 +28,24 @@ impl Plugin for AppPlugin {
         app.add_plugins(
             DefaultPlugins
                 .set(primary_window_plugin())
-                .set(log_plugin()),
+                .set(log_plugin())
+                // Engine plugins this game has no use for yet. Disabling at
+                // runtime costs no Bevy recompile, unlike dropping the Cargo
+                // feature, and both are leaf plugins — nothing else in Bevy
+                // depends on them, so removing them cannot break startup.
+                //
+                // Audio: there is no sound. Left enabled it opens an output
+                // device and keeps an audio thread running all session.
+                //
+                // Gilrs: the gamepad backend. There is no controller support,
+                // and left enabled it polls the OS for gamepad events every
+                // frame. Re-enable it when controller support is built.
+                //
+                // Coupling: when the `audio` feature is later dropped in
+                // Cargo.toml, `AudioPlugin` stops existing and the line below
+                // stops compiling. Delete it at the same time.
+                .disable::<bevy::audio::AudioPlugin>()
+                .disable::<bevy::gilrs::GilrsPlugin>(),
         );
 
         // Infrastructure every state relies on.

@@ -8,21 +8,14 @@
 use bevy::prelude::*;
 
 use crate::app::InGameState;
-use crate::config::input;
 
-/// Flips between playing and paused on Escape.
+/// Flips between playing and paused.
 ///
+/// Only runs on the frame the pause key is pressed while in a world — both
+/// conditions are applied where it is registered, in [`super::InGamePlugin`].
 /// Reads the current sub-state rather than tracking its own flag, so it
 /// cannot disagree with the state machine.
-pub fn toggle(
-    keys: Res<ButtonInput<KeyCode>>,
-    current: Res<State<InGameState>>,
-    mut next: ResMut<NextState<InGameState>>,
-) {
-    if !keys.just_pressed(input::PAUSE) {
-        return;
-    }
-
+pub fn toggle(current: Res<State<InGameState>>, mut next: ResMut<NextState<InGameState>>) {
     next.set(match current.get() {
         InGameState::Playing => InGameState::Paused,
         InGameState::Paused => InGameState::Playing,

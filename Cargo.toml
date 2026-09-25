@@ -27,15 +27,19 @@ bevy = "0.19"
 #     "ui",
 # ] }
 
-# ── Step 2: also drop 2d. Very likely safe — verify with one compile. ────
-#    `2d` exists for sprite-based games: it adds `bevy_sprite` and
-#    `bevy_sprite_render`. This game spawns no `Sprite`, ever.
+# ── Step 2: also drop 2d. Very likely safe, but a SMALL win. ─────────────
+#    `2d` exists for sprite-based games. This game spawns no `Sprite`, ever.
 #
-#    The reason this looks safe despite using `Camera2d`: the Core2d render
-#    pass lives in `bevy_core_pipeline`, which the `ui` feature already
-#    brings in via `ui_bevy_render`. So the UI camera keeps working without
-#    `2d`. That was read off the feature graph rather than tested, so give it
-#    one compile and check the UI still draws before trusting it.
+#    It looks safe despite the UI camera being a `Camera2d`: the Core2d render
+#    pass lives in `bevy_core_pipeline`, which the `ui` feature already brings
+#    in via `ui_bevy_render`, so the UI camera keeps working without `2d`.
+#
+#    The saving is smaller than the name suggests. `bevy_ui` depends on
+#    `bevy_sprite` directly (for texture slicing), so `bevy_sprite` is
+#    compiled either way — dropping `2d` only removes `bevy_sprite_render`.
+#    Both points were read off the dependency graph rather than tested: give
+#    it one compile and check the UI still draws before trusting it. Worth
+#    doing alongside Step 1, not on its own.
 #
 # bevy = { version = "0.19", default-features = false, features = [
 #     "3d",

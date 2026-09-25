@@ -7,6 +7,7 @@
 //! the live `Window` component, which is how Bevy expects window changes to
 //! be made.
 
+use bevy::input::common_conditions::input_just_pressed;
 use bevy::prelude::*;
 use bevy::window::{MonitorSelection, PrimaryWindow, WindowMode, WindowResolution};
 
@@ -40,9 +41,19 @@ pub struct WindowControlPlugin;
 
 impl Plugin for WindowControlPlugin {
     fn build(&self, app: &mut App) {
+        // The key check is a run condition rather than an `if` inside the
+        // system, so on every frame without that keypress — nearly all of
+        // them — the system is skipped entirely: no window query, no body.
+        //
         // Not gated on any state: being able to leave fullscreen should not
         // depend on where the player happens to be in the game.
-        app.add_systems(Update, (toggle_borderless, toggle_fullscreen));
+        app.add_systems(
+            Update,
+            (
+                toggle_borderless.run_if(input_just_pressed(input::TOGGLE_BORDERLESS)),
+                toggle_fullscreen.run_if(input_just_pressed(input::TOGGLE_FULLSCREEN)),
+            ),
+        );
     }
 }
 
@@ -62,14 +73,9 @@ fn starting_mode() -> WindowMode {
 const FULLSCREEN_MODE: WindowMode = WindowMode::BorderlessFullscreen(MonitorSelection::Current);
 
 /// Adds and removes the OS title bar and border.
-fn toggle_borderless(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut window: Query<&mut Window, With<PrimaryWindow>>,
-) {
-    if !keys.just_pressed(input::TOGGLE_BORDERLESS) {
-        return;
-    }
-
+///
+/// Only runs on the frame the toggle key is pressed.
+fn toggle_borderless(mut window: Query<&mut Window, With<PrimaryWindow>>) {
     let Ok(mut window) = window.single_mut() else {
         return;
     };
@@ -78,14 +84,9 @@ fn toggle_borderless(
 }
 
 /// Switches between fullscreen and a window at the configured size.
-fn toggle_fullscreen(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut window: Query<&mut Window, With<PrimaryWindow>>,
-) {
-    if !keys.just_pressed(input::TOGGLE_FULLSCREEN) {
-        return;
-    }
-
+///
+/// Only runs on the frame the toggle key is pressed.
+fn toggle_fullscreen(mut window: Query<&mut Window, With<PrimaryWindow>>) {
     let Ok(mut window) = window.single_mut() else {
         return;
     };

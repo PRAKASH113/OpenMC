@@ -21,6 +21,9 @@ to quietly undo.
 | Layout | `app` submodules are private; only `GameState` is re-exported | One path to the type, and misuse of `app` internals fails to compile. |
 | Layout | Every configurable value lives in `config/`, grouped by what it configures | One answer to "where do I change a setting?". A new category is a new file, not a decision. |
 | Layout | `utils/` holds *finished* adapters between settings and the engine | The bar is completeness, not size — anything still growing a design belongs with its domain. Keeps `app/` to composition and state only. |
+| Performance | Rare triggers are run conditions, not `if`s inside systems | The system is skipped outright when its trigger is absent — no query fetch, no body. |
+| Performance | Per-frame systems exit on the common case before querying or doing maths | At `opt-level = 0`, inlined glam maths runs unoptimised in our crate. Skipping it beats speeding it up. |
+| Performance | `AudioPlugin` and `GilrsPlugin` are disabled at runtime | No sound and no controllers exist. Both are leaf plugins. Re-enable Gilrs for controller support; delete the Audio line when the `audio` feature is dropped. |
 | Input | All key bindings live in `config/input.rs`, never inline in a system | One visible set, and a test can then prove no key is bound twice. Split from `config` by kind: `config` is engine/startup, `input` is player controls. |
 | Config | `config.rs` is `pub const` values only — no structs | It is a settings surface meant to be read in seconds. Revisit only when values must load from disk at startup. |
 | Config | Bevy enums used directly (`PresentMode`), never mirrored | A copy would lose the fallback semantics and need updating whenever Bevy's enum grows. "Let Bevy decide" is the *value* `AutoVsync`, not a separate mode. |
@@ -201,6 +204,22 @@ colour, the 3D camera as not yet existing, an `input/` folder, and an
 `ingame/screen.rs` that was deleted. All rewritten against the code, and a
 link to the removed `INGAME_FOUNDATION.md` was repointed. *Readability: a doc
 that contradicts the code is worse than no doc.*
+
+**Per-frame work pass (audit 1.4).** Key-triggered systems became run
+conditions; `fly` and `look` exit before querying or doing maths when there is
+no input; `AudioPlugin` and `GilrsPlugin` are disabled. *Perf: runtime — on a
+typical idle frame, three systems no longer execute at all, and the camera
+controls no longer query or do quaternion maths when the player is still.
+Startup — no audio device is opened and no gamepad backend is initialised.
+Build — none; all runtime changes, no feature edits. Modularity: `fly`'s
+key-reading moved into a pure `axis()` function, which is now unit-tested
+without Bevy. Verified with a 15-second run: clean startup, states and
+sub-states transition, scene spawns.*
+
+**Cargo.toml Step 2 claim corrected.** The comment said dropping the `2d`
+feature removes `bevy_sprite`. It does not: `bevy_ui` depends on `bevy_sprite`
+directly, so only `bevy_sprite_render` goes. Step 2 is still worth doing
+alongside Step 1, but it is a small win, and the comment now says so.
 
 ---
 
