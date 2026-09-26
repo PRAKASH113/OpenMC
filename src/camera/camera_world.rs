@@ -11,6 +11,9 @@
 use bevy::prelude::*;
 use bevy::render::view::Msaa;
 
+// Aliased: inside `crate::camera`, a bare `camera::` would read as this
+// module rather than `crate::config::camera`.
+use crate::config::camera as config;
 use crate::states::GameState;
 
 /// Marks the camera that renders the world.
@@ -64,6 +67,14 @@ fn spawn_world_camera(mut commands: Commands) {
             order: ORDER,
             ..default()
         },
+        // `Camera3d` requires a `Projection` and defaults to one if none is
+        // given, but that default's FOV would then only exist in Bevy's
+        // source — spawning it explicitly from `config::camera` is what
+        // makes FOV a value this project actually owns and can tune.
+        Projection::Perspective(PerspectiveProjection {
+            fov: config::FOV_DEGREES.to_radians(),
+            ..default()
+        }),
         // Geometry edges genuinely alias here, unlike on the UI camera.
         Msaa::Sample4,
         transform,

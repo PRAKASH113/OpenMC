@@ -465,6 +465,69 @@ The lesson: once logs prove the ECS state is right and the picture is still
 wrong, stop changing game logic and read the render path. Here that meant
 `prepare_view_targets` and the `upscaling` node, not `bevy_ui`.
 
+**Descend moved to Left Shift; sprint is now a double-tap, not a held key.**
+Requested change: descend should be Left Shift instead of Left Control, and
+sprint (triple speed) should trigger by pressing any of `W`/`A`/`S`/`D` twice
+in quick succession, the way Minecraft does it, rather than by holding a key.
+
+`DOWN` took `ShiftLeft`, which is where `SPRINT` used to live, so `SPRINT`'s
+dedicated keybinding is gone rather than reassigned — there is no held-key
+alternative left to give it. `config::input::DOUBLE_TAP_WINDOW` (0.3s) is the
+new tunable: the max gap between two presses of the *same* movement key that
+counts as a double-tap. `input::movement::fly` tracks the last key tapped and
+when (`Local<Option<(KeyCode, f32)>>`), and a `Local<bool>` for whether sprint
+is currently engaged; a double-tap turns it on, and releasing every movement
+key (the existing `intent == Vec3::ZERO` early return) turns it back off,
+rather than sprint being re-decided every frame from a held key's state.
+
+The detection logic (`is_double_tap`) is a pure function taking the tapped
+key, the current time, and the last tap, so it is unit-tested without Bevy —
+same pattern as `axis`. *Perf: four extra `just_pressed` lookups per frame,
+only reached once a movement key is already held (the early return above
+still fires first). Correctness: matches the requested double-tap behaviour
+for all four movement keys, not just one.*
+
+**Sprint trigger made a config toggle; the hold key it replaced got its own
+config constant.** Follow-up request: let double-tap and "hold a key" both
+exist, selected by a setting, rather than double-tap being the only option.
+
+`config::input::SprintMode` is a two-variant enum (`DoubleTap`, `Hold`), and
+`SPRINT_MODE` picks which one is live — a `const`, like every other setting
+in this module, not a runtime option (there is no settings menu yet).
+`SPRINT_HOLD_KEY` is `ControlLeft`: the traditional sprint modifier, and free
+again now that `DOWN` sits on `ShiftLeft`. `input::movement::fly` branches on
+`SPRINT_MODE` once per frame — `Hold` reads `keys.pressed(SPRINT_HOLD_KEY)`
+directly, `DoubleTap` keeps the tap-tracking logic from the entry above.
+
+Because `SPRINT_MODE` is a `const`, only the selected variant is ever
+constructed, and rustc's `dead_code` lint flags the other — correctly, from
+the compiler's point of view, since nothing evaluates to it. Allowed with a
+comment on the enum rather than restructured around it: this is what a
+compile-time (not runtime) toggle looks like, the same shape as
+`#![deny(unsafe_code)]`'s local `#[allow]` in `main.rs`. Both variants were
+built and clippy/test-verified locally before settling on `DoubleTap` as the
+shipped default. *Perf: none — a `match` on a `const` compared to the
+previous single code path. Correctness: `Hold` reproduces the pre-double-tap
+behaviour exactly, just reading a different key.*
+
+**Field of view made a config value.** Requested: a way to change FOV.
+There was nothing to change — `camera_world` spawned `Camera3d::default()`
+with no `Projection`, so Bevy's `#[require(Camera, Projection)]` silently
+filled one in at its own default (45°, confirmed from `bevy_camera` source).
+That default lived only in Bevy, not as a value this project owned.
+
+New `config::camera` module (mirroring `config::window` and `config::input`
+— `config/`'s stated shape is "adding a category means adding a file") holds
+`FOV_DEGREES`. `camera_world` now spawns an explicit
+`Projection::Perspective(PerspectiveProjection { fov: FOV_DEGREES.to_radians(), ..default() })`
+instead of leaning on the required-component default, converting
+degrees to radians at the one place that needs radians rather than storing
+the setting in the unit the player would find harder to reason about.
+*Perf: none, a value moved from an implicit engine default to an explicit
+one set once at spawn. Reading: FOV is now visible in the settings surface
+alongside every other tunable, instead of needing to be known as "a Bevy
+default" to find.*
+
 ---
 
 ## Known open items

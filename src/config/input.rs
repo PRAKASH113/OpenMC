@@ -29,10 +29,7 @@ pub const RIGHT: KeyCode = KeyCode::KeyD;
 pub const UP: KeyCode = KeyCode::Space;
 
 /// Descend, regardless of where the camera points.
-pub const DOWN: KeyCode = KeyCode::ControlLeft;
-
-/// Hold to move at [`SPRINT_MULTIPLIER`] times normal speed.
-pub const SPRINT: KeyCode = KeyCode::ShiftLeft;
+pub const DOWN: KeyCode = KeyCode::ShiftLeft;
 
 // -------------------------------------------------------------------- game
 
@@ -58,8 +55,44 @@ pub const LOOK_SENSITIVITY: f32 = 0.002;
 /// Movement speed in world units per second.
 pub const MOVE_SPEED: f32 = 12.0;
 
-/// Speed multiplier applied while [`SPRINT`] is held.
+/// Speed multiplier applied while sprinting.
 pub const SPRINT_MULTIPLIER: f32 = 3.0;
+
+/// The two ways sprint can be triggered.
+///
+/// Which one is live is picked below by [`SPRINT_MODE`], a `const` — so
+/// only one variant is ever actually constructed, and the compiler flags
+/// the other as dead code. That's the point: switching mode means editing
+/// this source and rebuilding, not a runtime choice, so the "dead" variant
+/// really is just the one nothing currently selects.
+#[allow(dead_code)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SprintMode {
+    /// Double-tap any of [`FORWARD`], [`BACKWARD`], [`LEFT`], or [`RIGHT`]
+    /// within [`DOUBLE_TAP_WINDOW`]. Sprint then stays engaged, the way
+    /// Minecraft's toggle does, until every movement key is released.
+    DoubleTap,
+    /// Hold [`SPRINT_HOLD_KEY`].
+    Hold,
+}
+
+/// Which of [`SprintMode`]'s two triggers is active.
+///
+/// A settings-surface constant like the ones around it, not a runtime
+/// option — there is no settings menu yet for a player to flip this
+/// themselves. Change it here and rebuild to switch styles.
+pub const SPRINT_MODE: SprintMode = SprintMode::DoubleTap;
+
+/// How quickly two presses of the same movement key must follow each other
+/// to count as a double-tap. Only read when [`SPRINT_MODE`] is
+/// [`SprintMode::DoubleTap`].
+pub const DOUBLE_TAP_WINDOW: f32 = 0.3;
+
+/// Held to sprint when [`SPRINT_MODE`] is [`SprintMode::Hold`].
+///
+/// Left Control rather than Left Shift: [`DOWN`] already holds Left Shift,
+/// and Left Control is the traditional "sprint" modifier this is replacing.
+pub const SPRINT_HOLD_KEY: KeyCode = KeyCode::ControlLeft;
 
 // ------------------------------------------------------------------- debug
 
@@ -93,7 +126,7 @@ mod tests {
             ("RIGHT", RIGHT),
             ("UP", UP),
             ("DOWN", DOWN),
-            ("SPRINT", SPRINT),
+            ("SPRINT_HOLD_KEY", SPRINT_HOLD_KEY),
             ("PAUSE", PAUSE),
             ("TOGGLE_BORDERLESS", TOGGLE_BORDERLESS),
             ("TOGGLE_FULLSCREEN", TOGGLE_FULLSCREEN),

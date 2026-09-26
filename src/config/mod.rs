@@ -8,5 +8,6 @@
 //! whoever consumes them: [`crate::window`] builds the window from
 //! [`window`], and the systems that read input use [`input`] directly.
 
+pub mod camera;
 pub mod input;
 pub mod window;
