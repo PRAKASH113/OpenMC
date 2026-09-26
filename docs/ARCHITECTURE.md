@@ -157,7 +157,8 @@ Temporary pieces to delete later, both marked in the source:
 `camera/mod.rs` registers one plugin per camera kind:
 
 - `camera_ui` draws the interface. Spawned at startup, lives for the whole
-  run, `order: 1`, no MSAA, and it does **not** clear the screen. It is built
+  run, `order: 1`, no MSAA. It clears its *own* texture to transparent and
+  is composited over the world (see below). It is built
   from Bevy's `Camera2d` component, but it is a UI camera rather than a 2D
   game camera — nothing draws sprites through it.
 - `camera_world` renders the world. Spawned on entering `InGame` and
@@ -166,6 +167,18 @@ Temporary pieces to delete later, both marked in the source:
 
 Both are named for *what they show*, not how they render — `camera_ui` and
 `camera_world` rather than 2D and 3D.
+
+**Why UI renders through `camera_ui` and not `camera_world`, once both exist
+at once.** Neither camera carries Bevy's `IsDefaultUiCamera` marker. With
+that marker absent, `bevy_ui`'s `DefaultUiCamera::get` (verified against
+source, not assumed) falls back to the camera with the highest `order`
+targeting the primary window — which is `camera_ui` at `order: 1`, above
+`camera_world`'s `0`. So the draw-order convention already documented above
+is doing double duty: it also decides where UI renders. `InGame`/`Paused` is
+the first state where both cameras are alive together, so this path was
+unexercised before then; if a third camera is ever added, whichever has the
+highest order becomes the UI target unless one is marked
+`IsDefaultUiCamera` explicitly.
 
 `camera/` owns the camera *entities* only — what each camera is and how it
 starts. Nothing in it reads input. The world camera carries a `LookAngles`
@@ -198,9 +211,27 @@ When a player body with physics arrives, `input/movement.rs` keeps reading
 intent from the keys and `player/` takes over what that intent does.
 
 Draw order is the one contract between them: the UI sits above the world.
-Because the UI camera never clears, **any state without a world camera must
-paint an opaque full-screen background** — `loading/` and `menu/` do — or
-bring its own camera.
+
+**How the two cameras combine: separate textures, then compositing.** Bevy
+gives each camera an intermediate texture keyed on its target, format *and
+MSAA level*. The UI camera is `Msaa::Off` and the world camera is not, so
+they draw into different textures, and each is then written to the window
+in `order`: world first (replacing, after clearing the window), UI second
+(blended on top). Two consequences, both verified against `bevy_render` /
+`bevy_core_pipeline` source:
+
+- **The UI camera must clear its texture every frame**, to `Color::NONE`.
+  `ClearColorConfig::None` looks like "draw over the world", but the world is
+  not in this texture. With `None` the texture is never cleared, so UI
+  accumulates across frames and despawned UI stays on screen. This shipped
+  as a real bug; see `IMPROVEMENTS.md`, 2026-09-26.
+- **The composite uses premultiplied alpha**, because that is what UI
+  blended onto a transparent texture leaves behind. Straight alpha would
+  darken every translucent pixel.
+
+The window itself is cleared by whichever camera writes to it first each
+frame, so states without a world camera no longer need an opaque background
+of their own.
 
 ## Startup configuration
 
@@ -282,6 +313,41 @@ both need, the fullscreen mode, sits in `window/mod.rs`.
 It is a top-level module, a sibling of `camera/` and `input/`, rather than
 tucked inside `utils/` — building and controlling the window is a whole
 domain in its own right, not a small adapter alongside something else.
+
+### Logical vs. physical size — the reason for the lifecycle split
+
+`config::WIDTH`/`HEIGHT` are **logical pixels** (points): on a display at
+150% OS scaling, "1280" is shown at 1920 real screen pixels, so the window is
+the same visual size everywhere. That single fact is handled by two different
+pieces of Bevy code depending on whether the window exists yet, which is
+exactly why `setup.rs` and `toggles.rs` being separate files matters, not
+just for lifecycle tidiness:
+
+- **`setup.rs` (window creation).** With no scale factor override set — this
+  project never sets one — Bevy hands winit a `LogicalSize` built from
+  `window.width()`/`height()`. A freshly built `WindowResolution` defaults
+  `scale_factor` to `1.0`, so those logical values equal `WIDTH`/`HEIGHT`
+  numerically, and winit converts logical to physical using the real
+  monitor DPI. Correct, and requires nothing extra from us.
+- **`toggles.rs` (a live window).** Bevy instead compares
+  `resolution.physical_width()`/`physical_height()` directly and requests
+  that as an *exact* physical pixel size — no DPI conversion at all. Setting
+  `window.resolution = WindowResolution::new(WIDTH, HEIGHT)` here — building
+  a fresh value — resets `scale_factor` to its `1.0` default and feeds
+  `WIDTH`/`HEIGHT` into this physical-pixels path, so the window comes back
+  smaller than it opened at on any display above 100% scaling. This shipped
+  as a real bug; see `IMPROVEMENTS.md`, 2026-09-26.
+  The fix is `window.resolution.set(WIDTH as f32, HEIGHT as f32)`: `.set()`
+  mutates the existing `WindowResolution` rather than replacing it, so it
+  keeps the `scale_factor` Bevy has been tracking live from the OS, and
+  performs the same logical-to-physical multiplication windows creation gets
+  for free.
+
+The rule this leaves behind: **never replace `window.resolution` wholesale
+on a live window** (`window.resolution = WindowResolution::new(..)`) if the
+values should be read as logical pixels — always `.set()`, which is
+scale-factor-aware. `WindowResolution::new(..)` is only safe to reach for
+during window *creation*, where Bevy's own conversion covers for it.
 
 ## Utilities
 

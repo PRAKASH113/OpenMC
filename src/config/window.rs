@@ -8,10 +8,16 @@ use bevy::window::PresentMode;
 /// Shown in the window header and the OS task switcher.
 pub const TITLE: &str = "OpenMC";
 
-/// Starting window width, in physical pixels.
+/// Starting window width, in logical pixels (points, not raw screen pixels).
+///
+/// Winit scales this by the monitor's DPI setting when the window is first
+/// created, so the window is the same visual size on a 100% and a 150%
+/// display — 1280 logical pixels is ~1920 real screen pixels at 150%. See
+/// [`crate::window::toggles`] for why that distinction matters at runtime
+/// too, not just at startup.
 pub const WIDTH: u32 = 1280;
 
-/// Starting window height, in physical pixels.
+/// Starting window height, in logical pixels. See [`WIDTH`].
 pub const HEIGHT: u32 = 720;
 
 /// Start without the OS title bar and border.

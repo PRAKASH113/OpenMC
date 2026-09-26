@@ -6,7 +6,7 @@
 
 use bevy::input::common_conditions::input_just_pressed;
 use bevy::prelude::*;
-use bevy::window::{PrimaryWindow, WindowMode, WindowResolution};
+use bevy::window::{PrimaryWindow, WindowMode};
 
 use super::FULLSCREEN_MODE;
 use crate::config::input;
@@ -48,8 +48,21 @@ fn toggle_fullscreen(mut window: Query<&mut Window, With<PrimaryWindow>>) {
         WindowMode::Windowed => FULLSCREEN_MODE,
         // Any fullscreen variant returns to a window, restoring the
         // configured size rather than whatever the display happened to be.
+        //
+        // `.set()`, not `resolution = WindowResolution::new(..)`. `set()`
+        // treats its arguments as *logical* pixels and multiplies by the
+        // window's current (OS-reported) scale factor to get the physical
+        // size — the same conversion winit does when it first creates the
+        // window at this logical size. `WindowResolution::new(..)` builds a
+        // fresh `WindowResolution` with `scale_factor` reset to its default
+        // of 1.0, and a live resolution change is applied as an exact
+        // physical pixel request — so on any monitor with OS scaling above
+        // 100%, replacing the resolution wholesale silently produces a
+        // smaller window than the one the player started with.
         _ => {
-            window.resolution = WindowResolution::new(config::WIDTH, config::HEIGHT);
+            window
+                .resolution
+                .set(config::WIDTH as f32, config::HEIGHT as f32);
             WindowMode::Windowed
         }
     };

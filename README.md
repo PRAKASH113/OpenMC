@@ -179,6 +179,7 @@ three pillars above.
 
 Respect everyone who takes part. Disagree with ideas, never with people,
 and help newcomers find their way.
+"And yes this Readme is written by the AI as i did not have time to write it myself, but i will be adding more content to it in the future."
 
 ## License
 

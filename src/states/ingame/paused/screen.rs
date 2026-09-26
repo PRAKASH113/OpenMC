@@ -8,7 +8,13 @@ use bevy::prelude::*;
 
 /// Dark wash over the world. The alpha is what makes the world readable
 /// behind it while still dimming it enough for the text to carry.
-const OVERLAY: Color = Color::srgba(0.05, 0.03, 0.08, 0.75);
+///
+/// Earlier values (0.75, then 0.45 and 0.3) all looked solid black. That was
+/// never the alpha: the UI camera's texture was not being cleared, so the
+/// overlay piled up on itself frame after frame until it was opaque (see
+/// `camera::camera_ui` and `docs/IMPROVEMENTS.md`). With that fixed, the
+/// alpha means what it says.
+const OVERLAY: Color = Color::srgba(0.05, 0.03, 0.08, 0.5);
 const LABEL: &str = "Paused";
 
 /// Marks this screen's entities so they can be cleared on exit.

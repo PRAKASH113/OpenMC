@@ -13,9 +13,14 @@ pub fn primary_window_plugin() -> WindowPlugin {
     WindowPlugin {
         primary_window: Some(Window {
             title: config::TITLE.to_string(),
-            // Physical pixels, not logical ones: on a display with OS
-            // scaling the window is exactly this many real pixels, so it
-            // appears smaller than a "1280-wide" window would elsewhere.
+            // `WindowResolution::new`'s parameters are named `physical_*`,
+            // but at window *creation* — this code path only — Bevy hands
+            // them to winit as a logical size when no scale factor override
+            // is set (which we never set). Winit then converts using the
+            // real monitor DPI, so the window matches config::WIDTH/HEIGHT
+            // in points, the same visual size on any display. See
+            // `config::window` and `window::toggles` for the runtime half of
+            // this, where the same numbers must be handled differently.
             resolution: WindowResolution::new(config::WIDTH, config::HEIGHT),
             // Bevy asks whether to *draw* decorations, so this is the
             // inverse of borderless.

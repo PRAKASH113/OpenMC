@@ -40,7 +40,7 @@ to quietly undo.
 | States | Each state's screen is self-contained; duplication is intentional | The four are meant to diverge completely; a shared abstraction would have to be torn out. |
 | States | `Loading` is boot loading only | World generation is planned as `InGame`'s first sub-state and soft loading as a counted overlay, not a state. See [`LOADING.md`](LOADING.md). |
 | States | `Paused` is a sub-state of `InGame`, not a sibling | Makes "paused with no world loaded" unrepresentable instead of guarded at runtime. See the States section of [`ARCHITECTURE.md`](ARCHITECTURE.md). |
-| Rendering | The UI camera does not clear; the world camera does | The UI draws after the world, so clearing there would erase it. States without a world camera must paint an opaque background. |
+| Rendering | The UI camera clears its own texture to transparent (`ClearColorConfig::Custom(Color::NONE)`) and is composited onto the window with premultiplied alpha | With `Msaa::Off` it renders into its own intermediate texture, not the world's, so it must clear or every frame's UI piles onto the last. See 2026-09-26. Never set it back to `ClearColorConfig::None`. |
 | Logging | Log config lives in `app/log.rs`, not `main.rs` | `LogPlugin` is configured *on* `DefaultPlugins`, which happens in `AppPlugin`. Routing it through `main.rs` would mean plumbing settings down only to hand them back. |
 | Logging | Filters build on `DEFAULT_FILTER` rather than replacing it | Bevy's own defaults survive; ours stay additive. |
 | Debug tooling | Debug-only code is gated with `#[cfg(debug_assertions)]` | Keeps it provably out of release rather than relying on a comment. |
@@ -58,6 +58,7 @@ not re-proposed as if it were new.
 | Sibling-file modules (`menu.rs` + `menu/`) | `mod.rs` style | Every module here has submodules, so the sibling style doubled the tree for no benefit. |
 | All states nested under `states/` | One top-level folder per state | Each state should own its own folder rather than being a file in a shared one. |
 | One top-level folder per state | Every state under `states/`, still one folder each | The top level had started mixing states with infrastructure. Grouping kept the folder-per-state property that was the original point. |
+| UI camera `ClearColorConfig::None` ("draw over the world, don't erase it") | Clear to `Color::NONE`, premultiplied-alpha output | `None` is only correct when two cameras share an intermediate texture, which requires matching MSAA. Ours do not, so the UI texture was never cleared: a stuck, black-looking pause overlay and a frozen-looking view. See 2026-09-26. |
 | `paused/` as a top-level sibling of `ingame/` | `states/ingame/paused/` | The folders now say what the state machine already said: `Paused` exists inside `InGame`. |
 | `camera_2d` / `camera_3d` | `camera_ui` / `camera_world` | Named for what each camera shows rather than how it renders. |
 | Engine plugin config in `utils/engine.rs` | Inline in `AppPlugin::build`, next to the domain plugin list | Disabling `AudioPlugin`/`GilrsPlugin` and swapping in our window/log plugins is deciding what the app is made of — composition, not an adapter that turns our config into one Bevy value like `window/` and `log.rs` do. |
@@ -133,10 +134,15 @@ not read as if they were. The ordering note prevents a real failure mode —
 registering `GameStatePlugin` first produces no compile error, only a runtime
 warning and a state machine that never transitions.*
 
-**Window resolution units documented.** Noted that `WindowResolution::new`
-takes physical pixels, so on a display with OS scaling the window is smaller
-than "1280 wide" suggests. *Perf: none. Reading: removes a surprise that
-would otherwise be diagnosed by confusion.*
+**Window resolution units documented — later found to be wrong, see
+2026-09-26.** Noted that `WindowResolution::new` takes physical pixels, so on
+a display with OS scaling the window is smaller than "1280 wide" suggests.
+This was an assumption from the constructor's parameter names
+(`physical_width`/`physical_height`), not verified against how `bevy_winit`
+actually uses the value — it turned out to be backwards for the one code path
+that matters at startup. Left here uncorrected in place, rather than edited
+away, precisely because acting on an unverified doc comment is what caused
+the bug it led to.
 
 **MSAA disabled on the UI camera.** Bevy defaults `Msaa` to `Sample4`, which
 allocates a 4x multisampled render target and resolves it every frame. The UI
@@ -300,6 +306,164 @@ reorganisation only. Readability: one file lists everything the app is made
 of, engine plugins included, matching what `AppPlugin`'s own doc comment
 already claimed; `utils/` stays narrow enough that "does this belong in
 utils?" keeps having a clear answer.*
+
+---
+
+### 2026-09-26
+
+**Fixed: window returned smaller than it started after leaving fullscreen.**
+Reported as: open at 1280x720, which the OS scales normally; press F11 twice
+(fullscreen, then back) and the window comes back noticeably smaller, as if
+OS scaling stopped applying.
+
+Root cause, confirmed against `bevy_winit` 0.19.1 source rather than assumed:
+the *same* `WIDTH`/`HEIGHT` numbers are handled by two different code paths
+depending on when they're set.
+
+- **At window creation** (`window::setup`), Bevy hands winit a `LogicalSize`
+  built from `window.width()`/`height()` — and since a freshly-constructed
+  `WindowResolution` defaults `scale_factor` to `1.0`, those logical values
+  are numerically equal to `WIDTH`/`HEIGHT`. Winit then converts *logical to
+  physical* using the monitor's real DPI. `1280` logical becomes `1920`
+  physical at 150% scaling — the window looks the same size as it would
+  anywhere else.
+- **On a live window** (`window::toggles`, restoring from fullscreen), Bevy
+  compares `resolution.physical_width()`/`physical_height()` directly and
+  calls `winit_window.request_inner_size()` with them as **exact physical
+  pixels** — no DPI conversion at all.
+
+`toggle_fullscreen` was doing `window.resolution = WindowResolution::new(WIDTH, HEIGHT)`
+— constructing a *fresh* `WindowResolution`, which resets `scale_factor` to
+its `1.0` default and feeds `1280`/`720` into the physical-pixels path. At
+150% scaling that is visually two-thirds the size the window opened at.
+
+Fix: `window.resolution.set(WIDTH as f32, HEIGHT as f32)` instead. `.set()`
+mutates the *existing* `WindowResolution` in place — so it keeps whatever
+`scale_factor` Bevy has been tracking live from the OS — and internally
+multiplies by that scale factor before writing the physical fields. Same
+logical-to-physical conversion as window creation, just computed by us
+instead of by winit. *Perf: none, a startup/toggle-time fix only.
+Correctness: the window now returns to the same visual size on any display
+scaling, not just 100%.*
+
+**Corrected the doc comments this bug traces back to.** `config::window::WIDTH`/`HEIGHT`
+and `window::setup`'s resolution comment both asserted "physical pixels,"
+reasoning from `WindowResolution::new`'s parameter names
+(`physical_width`/`physical_height`) rather than from how `bevy_winit`
+actually consumes the value. That assumption was never verified against the
+winit integration before being written down — this is the second time in
+this project an unverified comment about engine internals turned out
+backwards (the first was the `[lints]` schema diagnosis). Both comments now
+state which code path applies and why, with a cross-reference between
+`config::window`, `window::setup`, and `window::toggles` so the two lifetimes
+of the same constants aren't read in isolation again.
+
+**Fixed: the pause overlay read as a completely different screen.** Reported
+as: pausing should feel like an overlay on the game, but it looked like a
+full screen swap instead — the same complaint the overlay was specifically
+designed to avoid.
+
+Before assuming the fix was cosmetic, the camera architecture was checked
+against Bevy's actual UI-camera resolution (`DefaultUiCamera::get` in
+`bevy_ui`), since `InGame`/`Paused` is the first state where the UI camera
+and the world camera are ever alive at once — every earlier state only ever
+had one camera, so this path had never been exercised. Confirmed correct:
+with neither camera marked `IsDefaultUiCamera`, Bevy's fallback picks the
+camera with the highest `order` targeting the primary window, which is the
+UI camera (`order: 1` vs. the world camera's `0`) by construction. UI was
+never misrouted to the wrong camera.
+
+The actual cause was the overlay colour: `Color::srgba(0.05, 0.03, 0.08, 0.75)`
+is 75% opacity of near-black over a lit 3D scene. At that strength a
+near-black tint reads as solid, not dimmed — technically translucent, but
+visually indistinguishable from the opaque Loading/Menu screens it was meant
+to be unlike. Lowered to `0.45`. *Perf: none, a colour constant only.
+Correctness: ruled out the more serious possible cause (wrong camera
+targeting) by reading Bevy's source rather than assuming the visible-camera
+architecture just worked because it compiled — worth remembering the next
+time two cameras coexist for the first time in a new state.*
+
+**Not visually confirmed** — this environment cannot render the game.
+0.45 is a reasoned starting point (a common overlay strength), not a
+measured one; it may still want tuning once seen.
+
+**Fixed, for real this time: the pause overlay that never cleared, looked
+black at any alpha, and the view that looked frozen on first entering the
+game.** Reported as three separate bugs: controls do not engage on the first
+`Menu -> InGame` (pressing `2` then `3` "fixed" it); the pause overlay looks
+pitch black instead of translucent; after resuming, the overlay stays on
+screen forever while the world visibly moves behind it.
+
+They were one bug. Root cause, read from `bevy_render` and
+`bevy_core_pipeline` 0.19.1 source:
+
+- `prepare_view_targets` gives each camera an intermediate "main texture"
+  keyed on `(target, usage, format, msaa)`. The UI camera is `Msaa::Off` and
+  the world camera is `Sample4`, so **they do not share one**. The UI camera
+  draws into a texture the world is never in.
+- That texture's colour attachment only clears on the first use per frame
+  *if it has a clear colour*. `ClearColorConfig::None` gives it none, so its
+  load op is always `Load`: **it was never cleared**. `TextureCache` hands
+  out the same GPU texture frame after frame, so each frame's UI landed on
+  top of every earlier frame's.
+- The `upscaling` node then blends that texture onto the window with alpha
+  blending, because it is the second camera on the window.
+
+Every symptom follows. A 0.3-alpha overlay drawn over its own previous
+frame 10 times is 97% opaque, so any alpha looked black. After despawn,
+nothing overwrites the texture, so the overlay and its text stay composited
+over the live world indefinitely. That is also why minimising or resizing the
+window did not help: the world *was* re-rendering. And because the world
+camera's own main textures have the identical descriptor (same label,
+size, format, sample count 1), the two cameras draw from one `TextureCache`
+pool. The UI camera can be handed a texture that last held an opaque world
+frame and blend it over the live one, which looks exactly like frozen
+controls while input is in fact working (the diagnostic logs showed look
+and movement firing from the first frame). Leaving and re-entering the game
+reshuffles which texture each camera gets, which is why `2` then `3`
+appeared to fix it.
+
+Fix, in `camera::camera_ui`:
+
+- `clear_color: ClearColorConfig::Custom(Color::NONE)` — clear the UI's own
+  texture to transparent every frame.
+- `output_mode: CameraOutputMode::Write { blend_state:
+  Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING), clear_color: Default }`.
+  The UI pipeline alpha-blends onto a transparent texture, which leaves
+  premultiplied colour, so the default straight-alpha composite would
+  multiply by alpha twice and darken text edges and the overlay. The window
+  clear only applies to the first camera writing each frame: the world
+  camera in-game, the UI camera in menus.
+
+Kept `Msaa::Off` on the UI camera. The alternative fix, matching MSAA so
+both cameras share one texture and `None` works as intended, would bring
+back the 4x UI render target that entry removed. The overlay alpha went back
+up to 0.5, since the earlier "too dark" reports were accumulation, not alpha.
+
+*Perf: one transparent clear of the UI texture per frame, a single
+full-screen fill, far cheaper than the 4x MSAA target the alternative
+fix needed. Correctness: fixes all three reported bugs. It also drops the
+old rule that states without a world camera must paint an opaque
+background; the UI camera no longer relies on it.*
+
+**The wrong turns, recorded so they are not retried.** Each was checked and
+ruled out before the real cause was found:
+
+- **Overlay alpha too strong** (0.75 → 0.45 → 0.3). Never the cause; see
+  above. The earlier entry today blaming the colour is wrong.
+- **OS focus loss dropping the cursor grab**, answered with a
+  `regrab_on_focus_regained` system and a `Window::focused = true` request
+  after the F10/F11 toggles. Logs showed no `WindowFocused` events at all
+  during the failing transition, and input arriving normally. Both removed.
+- **Escape double-firing** and flipping straight back to `Paused`, answered
+  with a 0.25 s debounce. Logs showed exactly one toggle per press. Removed.
+- **Non-recursive despawn** and **sub-state `OnExit` not firing**, both
+  disproved from Bevy source. A diagnostic system confirmed the
+  `PausedScreen` entity count went `1 -> 0` on every resume.
+
+The lesson: once logs prove the ECS state is right and the picture is still
+wrong, stop changing game logic and read the render path. Here that meant
+`prepare_view_targets` and the `upscaling` node, not `bevy_ui`.
 
 ---
 
