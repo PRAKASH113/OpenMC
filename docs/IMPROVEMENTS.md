@@ -24,6 +24,13 @@ to quietly undo.
 | Performance | Rare triggers are run conditions, not `if`s inside systems | The system is skipped outright when its trigger is absent — no query fetch, no body. |
 | Performance | Per-frame systems exit on the common case before querying or doing maths | At `opt-level = 0`, inlined glam maths runs unoptimised in our crate. Skipping it beats speeding it up. |
 | Performance | `AudioPlugin` and `GilrsPlugin` are disabled at runtime | No sound and no controllers exist. Both are leaf plugins. Re-enable Gilrs for controller support; delete the Audio line when the `audio` feature is dropped. |
+| Input | `input/` holds controls that interpret input every frame; one-shot key actions live with what they change | Look, movement and cursor capture are continuous controls. Escape and F10/F11 are single actions whose logic belongs to their target, with the key as a run condition. |
+| Camera | `camera/` owns camera entities only; `input/` steers them through `WorldCamera` and `LookAngles` | Dependencies run one way, `input/` -> `camera/`. A future `player/` owns physics; reading intent stays in `input/`. |
+| Layout | One file per lifecycle when a module does both startup and runtime work | `window/` is `setup.rs` (once) plus `toggles.rs` (every frame). |
+| Layout | Debug-only tooling lives in its own module, compiled out as a whole | `states/debug.rs` behind one `#[cfg(debug_assertions)]`, rather than a cfg on every item. |
+| Layout | Engine plugin configuration lives inline in `AppPlugin::build`, not a separate adapter | Deciding which Bevy plugins run is a composition decision, the same kind as adding a domain plugin — not an adapter that turns config into one value. Tried as `utils::engine` and reverted. |
+| Layout | `window/` is a top-level module, not inside `utils/` | Once split into two files by lifecycle it is a domain in its own right, a sibling of `camera/` and `input/` — not a small, complete utility. |
+| Layout | `utils/` holds only complete, domain-less modules (currently `log.rs`) | The bar is completeness with no natural home elsewhere, not size — kept narrow on purpose so it does not collect an in-progress design by default. |
 | Input | All key bindings live in `config/input.rs`, never inline in a system | One visible set, and a test can then prove no key is bound twice. Split from `config` by kind: `config` is engine/startup, `input` is player controls. |
 | Config | `config.rs` is `pub const` values only — no structs | It is a settings surface meant to be read in seconds. Revisit only when values must load from disk at startup. |
 | Config | Bevy enums used directly (`PresentMode`), never mirrored | A copy would lose the fallback semantics and need updating whenever Bevy's enum grows. "Let Bevy decide" is the *value* `AutoVsync`, not a separate mode. |
@@ -53,6 +60,8 @@ not re-proposed as if it were new.
 | One top-level folder per state | Every state under `states/`, still one folder each | The top level had started mixing states with infrastructure. Grouping kept the folder-per-state property that was the original point. |
 | `paused/` as a top-level sibling of `ingame/` | `states/ingame/paused/` | The folders now say what the state machine already said: `Paused` exists inside `InGame`. |
 | `camera_2d` / `camera_3d` | `camera_ui` / `camera_world` | Named for what each camera shows rather than how it renders. |
+| Engine plugin config in `utils/engine.rs` | Inline in `AppPlugin::build`, next to the domain plugin list | Disabling `AudioPlugin`/`GilrsPlugin` and swapping in our window/log plugins is deciding what the app is made of — composition, not an adapter that turns our config into one Bevy value like `window/` and `log.rs` do. |
+| `window/` inside `utils/` | `window/` as a top-level module | A two-file lifecycle split (`setup.rs` + `toggles.rs`) is a domain, not a small complete utility — a sibling of `camera/` and `input/`. |
 | Shared `states/screen.rs` helper | Per-state `screen.rs` | Self-contained states were preferred over DRY, since the screens are placeholders meant to diverge. |
 | `Paused` as a `GameState` variant | `InGameState::Paused` sub-state | Enforcing "only pausable from in-game" structurally beats a runtime guard. Done once `InGame` owned real resources, as planned. |
 | `ingame/screen.rs` placeholder | `ingame/scene.rs` | The flat colour was scaffolding; the 3D scene replaces it. |
@@ -247,6 +256,50 @@ debug keys unconditionally, but they only exist in debug builds, so the test
 failed to compile in release. The debug entries are now added under
 `#[cfg(debug_assertions)]`. The bug predated this change; it surfaced when
 the release lint was run with `--all-targets`.
+
+**Tier 3: controls split from the camera.** `camera/camera_world.rs` held both
+the camera entity and the player controls. The controls moved to a new
+`input/` folder — `look.rs`, `movement.rs` (with `axis()` and its tests), and
+`cursor.rs` — registered by `GameInputPlugin` and gated on `Playing`. The
+camera keeps its marker, draw order, MSAA, start position, `LookAngles`, and
+spawn/despawn; it re-exports `WorldCamera` and `LookAngles` for `input/` to
+use. `input/` depends on `camera/`, never the reverse. The pitch clamp moved
+with `look`, the control that enforces it. Inside `input/`, `config::input`
+is imported as `controls` so a bare `input::` never reads as the module
+itself. *Perf: none — the same systems with the same run conditions,
+registered from a different plugin. Modularity: `camera_world.rs` went from
+237 lines of two concerns to 79 of one; each control is its own file.*
+
+**Tier 3: window split by lifecycle.** `utils/window.rs` became
+`utils/window/` with `setup.rs` (once, at startup) and `toggles.rs` (every
+frame, for the life of the game). The fullscreen mode both use is in
+`window/mod.rs`, and re-exports kept every call site unchanged. *Perf: none.
+Modularity: each file has one lifecycle.*
+
+**Two more files doing two jobs, found by sweeping the codebase.**
+`states/mod.rs` held the state machine and the debug jump keys; the keys
+moved to `states/debug.rs`, compiled out of release as one module instead of
+through a cfg on each item. `app/plugin.rs` held the composition root and the
+engine plugin configuration; the configuration moved to `utils/engine.rs`,
+beside the window and log adapters it uses, so `AppPlugin` only assembles the
+game. *Perf: none. Modularity: every file now has one job.* — **Partly
+reverted, see below.**
+
+**Correction: `utils/engine.rs` folded back into `AppPlugin`, `window/`
+promoted out of `utils/`.** Challenged on the reasoning above: deciding which
+Bevy plugins run — swapping in our window/log plugins, disabling
+`AudioPlugin`/`GilrsPlugin` — is a composition decision, indistinguishable in
+kind from adding a domain plugin, not an adapter that turns our config into
+one Bevy value the way `window/` and `log.rs` do. It moved back inline into
+`AppPlugin::build`, next to the domain plugin tuple it belongs beside. At the
+same time, `window/` moved out of `utils/` to the top level: a two-file split
+by lifecycle is a domain in its own right (a sibling of `camera/` and
+`input/`), not a small complete utility. `utils/` is back to holding only
+`log.rs`. See the reversals table above. *Perf: none — both changes are
+reorganisation only. Readability: one file lists everything the app is made
+of, engine plugins included, matching what `AppPlugin`'s own doc comment
+already claimed; `utils/` stays narrow enough that "does this belong in
+utils?" keeps having a clear answer.*
 
 ---
 

@@ -19,6 +19,10 @@ use bevy::prelude::*;
 use camera_ui::UiCameraPlugin;
 use camera_world::WorldCameraPlugin;
 
+// What the rest of the crate needs to steer the world camera — its marker and
+// its orientation. `crate::input` is the consumer.
+pub(crate) use camera_world::{LookAngles, WorldCamera};
+
 /// Registers every camera.
 pub struct CameraPlugin;
 

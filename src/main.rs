@@ -19,8 +19,10 @@
 mod app;
 mod camera;
 mod config;
+mod input;
 mod states;
 mod utils;
+mod window;
 
 use bevy::prelude::AppExit;
 

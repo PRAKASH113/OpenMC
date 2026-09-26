@@ -3,22 +3,25 @@
 use bevy::prelude::*;
 
 use crate::camera::CameraPlugin;
+use crate::input::GameInputPlugin;
 use crate::states::GameStatePlugin;
 use crate::utils::log::log_plugin;
-use crate::utils::window::{WindowControlPlugin, primary_window_plugin};
+use crate::window::{WindowControlPlugin, primary_window_plugin};
 
 /// Assembles the whole game.
 ///
 /// Adding a domain to the game means adding its plugin here and nowhere
-/// else.
+/// else. This includes Bevy's own plugins — enabling, configuring, or
+/// disabling one of them is as much a decision about what the app is made of
+/// as adding one of ours, so it belongs in this one list too.
 pub struct AppPlugin;
 
 impl Plugin for AppPlugin {
     fn build(&self, app: &mut App) {
-        // Must come first. It installs `StatesPlugin`, which `GameStatePlugin`
-        // needs in place before it calls `init_state` — registering them the
-        // other way round is not a compile error, just a runtime warning and
-        // a state machine that never transitions.
+        // The engine must come first. It installs `StatesPlugin`, which
+        // `GameStatePlugin` needs in place before it calls `init_state` —
+        // registering them the other way round is not a compile error, just a
+        // runtime warning and a state machine that never transitions.
         app.add_plugins(
             DefaultPlugins
                 .set(primary_window_plugin())
@@ -44,6 +47,11 @@ impl Plugin for AppPlugin {
 
         // Our domains. `GameStatePlugin` brings in every state itself, so
         // adding a state never touches this file — only `states/mod.rs`.
-        app.add_plugins((GameStatePlugin, CameraPlugin, WindowControlPlugin));
+        app.add_plugins((
+            GameStatePlugin,
+            CameraPlugin,
+            GameInputPlugin,
+            WindowControlPlugin,
+        ));
     }
 }

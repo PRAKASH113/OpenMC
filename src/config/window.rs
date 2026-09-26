@@ -1,6 +1,6 @@
 //! Settings you change.
 //!
-//! Values only. Getting them into the engine is [`crate::utils::window`]'s job,
+//! Values only. Getting them into the engine is [`crate::window`]'s job,
 //! and the reasoning behind each choice is in `docs/ARCHITECTURE.md`.
 
 use bevy::window::PresentMode;

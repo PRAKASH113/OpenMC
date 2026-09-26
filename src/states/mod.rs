@@ -11,6 +11,9 @@
 //! its own folder, so adding behaviour to a state never means editing this
 //! file.
 
+// Debug-only tooling, compiled out of release builds entirely.
+#[cfg(debug_assertions)]
+mod debug;
 mod ingame;
 mod loading;
 mod menu;
@@ -77,9 +80,9 @@ impl Plugin for GameStatePlugin {
         app.add_plugins((LoadingPlugin, MenuPlugin, InGamePlugin));
 
         // Debug-only, so a shipped build cannot teleport between states on
-        // a keypress.
+        // a keypress. The whole `debug` module is compiled out of release.
         #[cfg(debug_assertions)]
-        app.add_systems(Update, debug_jump_to_state);
+        app.add_systems(Update, debug::jump_to_state);
     }
 }
 
@@ -99,36 +102,6 @@ fn log_state_change<S: States>(mut transitions: MessageReader<StateTransitionEve
             (None, Some(to)) => info!("state: entering {to:?}"),
             (Some(from), None) => info!("state: leaving {from:?}"),
             (None, None) => {}
-        }
-    }
-}
-
-/// Temporary debug shortcuts: each key jumps straight to a state so every
-/// screen can be checked before the states drive themselves.
-///
-/// [`InGameState::Paused`] is deliberately absent — it is only reachable by
-/// pausing while in a world, which is the whole point of it being a
-/// sub-state.
-///
-/// Jumping to [`GameState::Loading`] bounces straight back to the menu,
-/// because loading currently has nothing to wait for. That is still useful:
-/// it exercises the `Loading -> Menu` exit.
-///
-/// Delete this table and [`debug_jump_to_state`] once real transitions exist.
-#[cfg(debug_assertions)]
-const DEBUG_JUMPS: [(KeyCode, GameState); 3] = [
-    (crate::config::input::DEBUG_GOTO_LOADING, GameState::Loading),
-    (crate::config::input::DEBUG_GOTO_MENU, GameState::Menu),
-    (crate::config::input::DEBUG_GOTO_INGAME, GameState::InGame),
-];
-
-/// Applies the [`DEBUG_JUMPS`] shortcuts. Debug builds only.
-#[cfg(debug_assertions)]
-fn debug_jump_to_state(keys: Res<ButtonInput<KeyCode>>, mut next: ResMut<NextState<GameState>>) {
-    for (key, state) in DEBUG_JUMPS {
-        if keys.just_pressed(key) {
-            next.set(state);
-            return;
         }
     }
 }

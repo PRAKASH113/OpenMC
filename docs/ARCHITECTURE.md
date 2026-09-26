@@ -18,6 +18,7 @@ src/
 │   └── plugin.rs            #   AppPlugin: the composition root
 ├── states/                  # The state machine and every state
 │   ├── mod.rs               #   GameState, InGameState, GameStatePlugin
+│   ├── debug.rs             #   Debug-build-only jump keys (compiled out of release)
 │   ├── loading/             #   Boot loading (solid), exits to Menu
 │   │   ├── mod.rs
 │   │   └── screen.rs
@@ -31,15 +32,23 @@ src/
 │       └── paused/          #     Sub-state: lives inside its parent
 │           ├── mod.rs
 │           └── screen.rs
-├── camera/
+├── camera/                  # The camera entities: what they are, how they start
 │   ├── mod.rs               #   CameraPlugin: registers every camera
 │   ├── camera_ui.rs         #   Draws the interface
-│   └── camera_world.rs      #   Renders the world; look and fly controls
+│   └── camera_world.rs      #   Renders the world
+├── input/                   # Player controls: what input does to the view
+│   ├── mod.rs               #   GameInputPlugin: all gated on Playing
+│   ├── look.rs              #   Mouse -> view rotation, pitch clamp
+│   ├── movement.rs          #   Keys -> flight, axis() + tests
+│   └── cursor.rs            #   Lock/hide the cursor while playing
 ├── config/                  # Every configurable value, grouped by what it configures
 │   ├── window.rs            #   Title, size, borderless, fullscreen, present mode
 │   └── input.rs             #   Key bindings, sensitivity, speed
-└── utils/                   # Finished adapters between our settings and the engine
-    ├── window.rs            #   Builds the window; runtime borderless/fullscreen
+├── window/                  # Building the window, and changing it at runtime
+│   ├── mod.rs               #   Shared fullscreen mode
+│   ├── setup.rs             #   Builds the window, once, at startup
+│   └── toggles.rs           #   F10/F11 at runtime
+└── utils/                   # Small, complete, unrelated-to-each-other pieces
     └── log.rs               #   Log filters
 ```
 
@@ -75,14 +84,22 @@ which keeps our layout and the engine's readable as one.
 
 **Planned** domain modules, each registering its own Bevy `Plugin`:
 `world/` (voxel and chunk data, generation, storage), `render/` (meshing,
-chunk rendering, materials), `player/` (controller, block interaction),
-`ui/` (HUD, debug overlay).
+chunk rendering, materials), `player/` (the player's body — physics,
+gravity, collision — and block interaction), `ui/` (HUD, debug overlay).
+Reading movement *intent* from the keys stays in `input/`; `player/` will
+own what that intent does to a body in the world.
 
 ## Composition
 
 Every domain is a Bevy `Plugin`, and `app::plugin::AppPlugin` is the single
 place they are registered. `app::run` does nothing but add `AppPlugin` and
-run, so the list of what the game is made of reads top-to-bottom in one file.
+run, so the list of what the game is made of reads top-to-bottom in one file
+— including Bevy's own plugins. `AppPlugin` builds `DefaultPlugins` with our
+window and logging swapped in and the unused ones (`AudioPlugin`,
+`GilrsPlugin`) disabled, then adds our domains. Configuring which engine
+plugins run was tried as a separate `utils::engine` adapter and folded back
+in: deciding what the app is made of is composition, not adaptation, whether
+the plugin is ours or Bevy's — see `IMPROVEMENTS.md`.
 
 Plugins are a build-time tool, not a runtime one — `Plugin::build` runs once
 at startup and a system registered through a plugin runs exactly as fast as
@@ -129,7 +146,7 @@ completely as real content arrives.
 
 Temporary pieces to delete later, both marked in the source:
 
-- `states::debug_jump_to_state` — keys `1`-`3` jump to `Loading`, `Menu`,
+- `states::debug::jump_to_state` — keys `1`-`3` jump to `Loading`, `Menu`,
   `InGame`. There is deliberately no key for `Paused`; it is only reachable
   by pausing. Jumping to `Loading` bounces straight back to `Menu`, since
   loading has nothing to wait for. Debug builds only.
@@ -149,6 +166,36 @@ Temporary pieces to delete later, both marked in the source:
 
 Both are named for *what they show*, not how they render — `camera_ui` and
 `camera_world` rather than 2D and 3D.
+
+`camera/` owns the camera *entities* only — what each camera is and how it
+starts. Nothing in it reads input. The world camera carries a `LookAngles`
+component (its orientation as yaw and pitch, created at spawn from the
+starting view), and `crate::input` steers the camera through that and its
+`WorldCamera` marker, both re-exported from `camera/mod.rs`. The dependency
+runs one way: `input/` depends on `camera/`, never the reverse.
+
+## Input
+
+`input/` holds the player's controls — code that *interprets* input every
+frame and applies it to the view. One file per control: `look.rs` (mouse to
+rotation, including the pitch clamp that stops the view flipping over),
+`movement.rs` (held keys to flight, with the pure `axis()` helper and its
+tests), and `cursor.rs` (locking the mouse while playing, which only exists
+so looking works). `GameInputPlugin` registers them, all gated on
+`InGameState::Playing` so pausing freezes the view.
+
+What deliberately lives elsewhere:
+
+- **Which key does what** is a setting, in `config::input`. Inside `input/`
+  it is imported as `controls`, because a bare `input::` there would read as
+  the module itself.
+- **One-shot key actions** belong to what they change, with the key as a run
+  condition: Escape is in `states::ingame::pause`, F10/F11 in
+  `window::toggles`. The split is continuous interpretation (here)
+  versus a single action triggered by a key (with its target).
+
+When a player body with physics arrives, `input/movement.rs` keeps reading
+intent from the keys and `player/` takes over what that intent does.
 
 Draw order is the one contract between them: the UI sits above the world.
 Because the UI camera never clears, **any state without a world camera must
@@ -219,21 +266,36 @@ Values that are not player-facing settings stay with their owner: camera draw
 order is a rendering detail, and the pitch clamp is a safety limit rather than
 a taste setting, so both live in `camera_world`.
 
-There is no `input/` module yet. When input *behaviour* arrives — action
-mapping, rebinding, gamepad support — it gets one, and `config::input` keeps
-holding the values it reads. Bindings are settings; interpreting them is
-behaviour.
+Bindings are settings and live here; interpreting them is behaviour and
+lives in `input/`. When action mapping, rebinding, or gamepad support arrive,
+they go in `input/` too, and `config::input` keeps holding the values.
+
+## Window
+
+`window/` turns `config::window` into Bevy's window and keeps it updated, and
+is split by lifecycle rather than kept as one file: `setup.rs` runs once,
+before the app starts, to build the `WindowPlugin`; `toggles.rs` runs for the
+life of the game, handling F10/F11 by mutating the live `Window` component,
+which is how Bevy expects runtime window changes to be made. The one thing
+both need, the fullscreen mode, sits in `window/mod.rs`.
+
+It is a top-level module, a sibling of `camera/` and `input/`, rather than
+tucked inside `utils/` — building and controlling the window is a whole
+domain in its own right, not a small adapter alongside something else.
 
 ## Utilities
 
-`utils/` holds modules that adapt our settings to the engine and are
-*finished*: `window.rs` creates the window and owns the runtime borderless
-and fullscreen toggles, `log.rs` decides which log targets print.
+`utils/` holds small pieces that do one complete job and have no natural
+domain of their own — currently just `log.rs`, which decides what log targets
+print. The bar for belonging here is completeness, not size, so a folder
+kept for exactly this purpose does not become a place where an in-progress
+design collects by default.
 
-The bar for belonging there is completeness, not size — a module still
-growing a design belongs with the domain it serves. Keeping them out of
-`app/` leaves that folder holding only the parts that shape how the game is
-assembled: the composition root and the state machine.
+`window/` and Bevy's own plugin configuration were both tried here first and
+moved out: window setup grew into two files and a real lifecycle split, which
+made it a domain rather than a small utility; and deciding which engine
+plugins run is a composition decision, so it belongs in `AppPlugin` — see
+`IMPROVEMENTS.md`.
 
 ## Logging
 

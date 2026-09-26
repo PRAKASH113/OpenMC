@@ -8,9 +8,9 @@ for you to accept, reject, or defer.
 file records ones still *open*. When something here is acted on, it should
 move there.
 
-Current size: 1,241 lines of Rust across 22 files. Largest file is
-`camera/camera_world.rs` at 237 lines (including its tests). Nothing is close
-to the 800-line limit, so none of these are urgent.
+Current size: 1,366 lines of Rust across 30 files. Largest file is
+`config/input.rs` at 127 lines (including its test); no source file exceeds
+it. Nothing is close to the 800-line limit, so none of these are urgent.
 
 ---
 
@@ -131,7 +131,7 @@ Both were confirmed to be leaf plugins (no Bevy crate depends on
 
 - `log_state_change` — an `on_message` run condition would perform the same
   empty-queue check the system already does, so it would save nothing.
-- `debug_jump_to_state` — three key lookups, debug builds only. Chaining three
+- `states::debug::jump_to_state` — three key lookups, debug builds only. Chaining three
   run conditions would cost more than it saves.
 - Picking, animation, gizmos, scene and sprite plugins also run per-frame
   systems over empty queries. They were not disabled: `bevy_ui` depends on
@@ -172,34 +172,44 @@ what changed is that the folders gained a common parent.
 
 ## Tier 3 — Modularity
 
-### 3.1 `camera_world.rs` contains a player controller
+All tier 3 items are resolved. Details are in `IMPROVEMENTS.md`.
 
-At 189 lines it is the largest file, and it holds two different categories:
-camera *setup* (spawn, order, MSAA, despawn) and player *input handling*
-(`look`, `fly`, cursor grab).
+### 3.1 `camera_world.rs` contained a player controller — **done**
 
-`CLAUDE.md`'s own target layout assigns "controller, interaction" to a
-`player/` module. Flying a camera with WASD is player control that happens to
-move a camera. Splitting it would leave `camera/` owning cameras and give
-`player/` its first real content.
+Split: `camera/camera_world.rs` keeps the camera entity (marker, draw order,
+MSAA, start position, `LookAngles`, spawn/despawn), and the controls moved to
+a new `input/` folder — `look.rs`, `movement.rs`, `cursor.rs`. `input/`
+depends on `camera/`, never the reverse. A future `player/` module will own
+physics and block interaction; reading intent from the keys stays in
+`input/`.
 
-This is also the natural moment to do it, because the controller is about to
-grow gravity and collision, which are definitely not camera concerns.
+### 3.2 `utils/window.rs` did two lifecycles — **done**
 
-### 3.2 `utils/window.rs` does two lifecycles
+Now `window/` — a top-level module, not inside `utils/` — with `setup.rs`
+(runs once at startup) and `toggles.rs` (runs for the life of the game). The
+shared fullscreen mode sits in `window/mod.rs`, and re-exports kept every
+call site unchanged.
 
-It holds `primary_window_plugin()` (runs once, at startup) and
-`WindowControlPlugin` (runs every frame, forever). Those are different kinds
-of thing sharing a file because they share a noun.
+A sweep for the same problem elsewhere found one more, fixed the same way:
+`states/mod.rs` held the state machine *and* the debug jump keys. The keys
+moved to `states/debug.rs`, compiled out of release as a whole module.
 
-At about 100 lines it is not a problem yet. If it grows, splitting startup
-from runtime controls is the move — and a runtime-controls module that keeps
-growing arguably stops meeting the `utils/` bar of being *finished*.
+The sweep also produced a second change — extracting `utils/engine.rs` for
+Bevy's own plugin configuration, on the theory that it was "adapting settings
+to the engine" like `window/` and `log.rs`. **This was tried and reverted.**
+Deciding which engine plugins run (audio on or off, gamepad on or off) is a
+composition decision — the same kind of decision as adding a domain plugin —
+not an adapter producing one value from config. It moved back into
+`AppPlugin::build`, inline, next to the domain plugin list it belongs beside.
+`window/` also moved out of `utils/` entirely once it was a two-file lifecycle
+split rather than a single small adapter — at that size it is a domain in its
+own right, a sibling of `camera/` and `input/`, not a utility. `utils/` is
+back to holding only `log.rs`. See `IMPROVEMENTS.md` for the full reasoning
+on both reversals.
 
-### 3.3 `input/` is a different kind of module — **resolved**
+### 3.3 `input/` module — **done**
 
-The constants moved to `config/input.rs` and the `input/` folder was removed.
-It returns as a real module when input behaviour (rebinding, gamepad) exists.
+Recreated as a real module for the player controls from 3.1.
 
 ---
 

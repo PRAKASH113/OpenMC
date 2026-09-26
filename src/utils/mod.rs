@@ -1,13 +1,8 @@
-//! Small, self-contained pieces that adapt our settings to the engine.
+//! Small, self-contained pieces with no ongoing design questions.
 //!
-//! Each module here does one finished job with no ongoing design questions:
-//! [`window`] creates the window and handles its runtime toggles, [`log`]
-//! decides which log targets are worth printing. They are separated from
-//! [`crate::app`] so that folder holds only the parts that shape how the
-//! game is assembled.
-//!
-//! The bar for belonging here is that a module is *complete* — not merely
-//! small. Anything still growing a design belongs with the domain it serves.
+//! Currently just [`log`], which decides which log targets are worth
+//! printing. The bar for belonging here is that a module is *complete* — not
+//! merely small — so it can hold more later without becoming a place where
+//! unrelated things collect by default.
 
 pub mod log;
-pub mod window;

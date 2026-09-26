@@ -5,7 +5,7 @@
 //! any of the code that consumes them.
 //!
 //! Turning values into engine settings is not done here. That belongs to
-//! whoever consumes them: [`crate::utils::window`] builds the window from
+//! whoever consumes them: [`crate::window`] builds the window from
 //! [`window`], and the systems that read input use [`input`] directly.
 
 pub mod input;

@@ -66,8 +66,10 @@ src/
 │   └── ingame/      #   The game world
 │       └── paused/  #     Pause screen (a sub-state of in-game)
 ├── camera/          # UI camera and world camera
+├── input/           # Player controls: mouse look, movement, cursor capture
 ├── config/          # Settings: window, key bindings
-└── utils/           # Small finished helpers (window setup, logging)
+├── window/          # Building the window, and F10/F11 at runtime
+└── utils/           # Small finished helpers with no domain of their own (logging)
 ```
 
 Game states live under `states/`, and a sub-state sits inside its parent's
