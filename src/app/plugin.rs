@@ -4,9 +4,11 @@ use bevy::prelude::*;
 
 use crate::camera::CameraPlugin;
 use crate::input::GameInputPlugin;
+use crate::render::RenderPlugin;
 use crate::states::GameStatePlugin;
 use crate::utils::log::log_plugin;
 use crate::window::{WindowControlPlugin, primary_window_plugin};
+use crate::world::WorldPlugin;
 
 /// Assembles the whole game.
 ///
@@ -47,11 +49,15 @@ impl Plugin for AppPlugin {
 
         // Our domains. `GameStatePlugin` brings in every state itself, so
         // adding a state never touches this file — only `states/mod.rs`.
+        // `WorldPlugin` before `RenderPlugin`: `render/` depends on `world/`
+        // and never the reverse, so this list reads in the same direction.
         app.add_plugins((
             GameStatePlugin,
             CameraPlugin,
             GameInputPlugin,
             WindowControlPlugin,
+            WorldPlugin,
+            RenderPlugin,
         ));
     }
 }

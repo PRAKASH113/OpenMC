@@ -108,6 +108,13 @@ pub const DEBUG_GOTO_MENU: KeyCode = KeyCode::Digit2;
 #[cfg(debug_assertions)]
 pub const DEBUG_GOTO_INGAME: KeyCode = KeyCode::Digit3;
 
+/// Toggle chunk locking: freezes whichever chunks are currently loaded, so
+/// none unload and none newly load however far the player wanders. Testing
+/// only — inert unless [`crate::config::debug::TESTING_TOOLS_ENABLED`] is
+/// `true`. See `world::debug`.
+#[cfg(debug_assertions)]
+pub const TOGGLE_CHUNK_LOCK: KeyCode = KeyCode::F9;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +147,7 @@ mod tests {
             ("DEBUG_GOTO_LOADING", DEBUG_GOTO_LOADING),
             ("DEBUG_GOTO_MENU", DEBUG_GOTO_MENU),
             ("DEBUG_GOTO_INGAME", DEBUG_GOTO_INGAME),
+            ("TOGGLE_CHUNK_LOCK", TOGGLE_CHUNK_LOCK),
         ]);
 
         all

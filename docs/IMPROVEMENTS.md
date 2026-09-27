@@ -12,38 +12,134 @@ to quietly undo.
 
 ## Standing decisions
 
-| Area | Decision | Why |
-| --- | --- | --- |
-| Dependencies | `encase*` pinned to `0.12.1` in `Cargo.lock` | `0.12.2` moved to `syn 3` while `bevy_macro_utils` is on `syn 2`, breaking `bevy_encase_derive`. Do not `cargo update -p encase` past this until upstream fixes it. |
-| Layout | `mod.rs` module style | Every module here has submodules, so the sibling-file style pairs each folder with a file and doubles the tree. Bevy is written this way too. |
-| Layout | Every state lives under `states/`, one folder each; a sub-state's folder sits inside its parent's | The top level separates states from infrastructure, and the folders mirror the state hierarchy — `paused/` is in `ingame/` because `Paused` is a sub-state of `InGame`. |
-| Layout | `main.rs` holds only `mod` declarations and crate attributes | Setup belongs in `app`. The only reason to reopen it is adding a module. |
-| Layout | The state machine lives in `states/mod.rs`; each state folder is private to it | Someone looking for `GameState` finds it where the states are. `app/` keeps only `run()` and the composition root. |
-| Layout | Every configurable value lives in `config/`, grouped by what it configures | One answer to "where do I change a setting?". A new category is a new file, not a decision. |
-| Layout | `utils/` holds *finished* adapters between settings and the engine | The bar is completeness, not size — anything still growing a design belongs with its domain. Keeps `app/` to composition only. |
-| Performance | Rare triggers are run conditions, not `if`s inside systems | The system is skipped outright when its trigger is absent — no query fetch, no body. |
-| Performance | Per-frame systems exit on the common case before querying or doing maths | At `opt-level = 0`, inlined glam maths runs unoptimised in our crate. Skipping it beats speeding it up. |
-| Performance | `AudioPlugin` and `GilrsPlugin` are disabled at runtime | No sound and no controllers exist. Both are leaf plugins. Re-enable Gilrs for controller support; delete the Audio line when the `audio` feature is dropped. |
-| Input | `input/` holds controls that interpret input every frame; one-shot key actions live with what they change | Look, movement and cursor capture are continuous controls. Escape and F10/F11 are single actions whose logic belongs to their target, with the key as a run condition. |
-| Camera | `camera/` owns camera entities only; `input/` steers them through `WorldCamera` and `LookAngles` | Dependencies run one way, `input/` -> `camera/`. A future `player/` owns physics; reading intent stays in `input/`. |
-| Layout | One file per lifecycle when a module does both startup and runtime work | `window/` is `setup.rs` (once) plus `toggles.rs` (every frame). |
-| Layout | Debug-only tooling lives in its own module, compiled out as a whole | `states/debug.rs` behind one `#[cfg(debug_assertions)]`, rather than a cfg on every item. |
-| Layout | Engine plugin configuration lives inline in `AppPlugin::build`, not a separate adapter | Deciding which Bevy plugins run is a composition decision, the same kind as adding a domain plugin — not an adapter that turns config into one value. Tried as `utils::engine` and reverted. |
-| Layout | `window/` is a top-level module, not inside `utils/` | Once split into two files by lifecycle it is a domain in its own right, a sibling of `camera/` and `input/` — not a small, complete utility. |
-| Layout | `utils/` holds only complete, domain-less modules (currently `log.rs`) | The bar is completeness with no natural home elsewhere, not size — kept narrow on purpose so it does not collect an in-progress design by default. |
-| Input | All key bindings live in `config/input.rs`, never inline in a system | One visible set, and a test can then prove no key is bound twice. Split from `config` by kind: `config` is engine/startup, `input` is player controls. |
-| Config | `config.rs` is `pub const` values only — no structs | It is a settings surface meant to be read in seconds. Revisit only when values must load from disk at startup. |
-| Config | Bevy enums used directly (`PresentMode`), never mirrored | A copy would lose the fallback semantics and need updating whenever Bevy's enum grows. "Let Bevy decide" is the *value* `AutoVsync`, not a separate mode. |
-| Window | `BORDERLESS` is stored as the inverse of Bevy's `decorations` | Bevy models "draw the title bar"; the inversion happens once, at the boundary in `window.rs`. |
-| Window | `present_mode` is applied in `window.rs` | It is a property of Bevy's `Window`, not of a render plugin. |
-| Camera | One persistent camera, owned outside the states | State screens spawn only their own content and never contend over the view. |
-| States | Each state's screen is self-contained; duplication is intentional | The four are meant to diverge completely; a shared abstraction would have to be torn out. |
-| States | `Loading` is boot loading only | World generation is planned as `InGame`'s first sub-state and soft loading as a counted overlay, not a state. See [`LOADING.md`](LOADING.md). |
-| States | `Paused` is a sub-state of `InGame`, not a sibling | Makes "paused with no world loaded" unrepresentable instead of guarded at runtime. See the States section of [`ARCHITECTURE.md`](ARCHITECTURE.md). |
-| Rendering | The UI camera clears its own texture to transparent (`ClearColorConfig::Custom(Color::NONE)`) and is composited onto the window with premultiplied alpha | With `Msaa::Off` it renders into its own intermediate texture, not the world's, so it must clear or every frame's UI piles onto the last. See 2026-09-26. Never set it back to `ClearColorConfig::None`. |
-| Logging | Log config lives in `app/log.rs`, not `main.rs` | `LogPlugin` is configured *on* `DefaultPlugins`, which happens in `AppPlugin`. Routing it through `main.rs` would mean plumbing settings down only to hand them back. |
-| Logging | Filters build on `DEFAULT_FILTER` rather than replacing it | Bevy's own defaults survive; ours stay additive. |
-| Debug tooling | Debug-only code is gated with `#[cfg(debug_assertions)]` | Keeps it provably out of release rather than relying on a comment. |
+Grouped by area. Each row is a rule currently in force. When one changes,
+move the old version to **Reversals** below instead of editing it away.
+Last reviewed in full: audit #2, 2026-09-26.
+
+### Dependencies and build
+
+| Decision | Why |
+| --- | --- |
+| `encase*` pinned to `0.12.1` in `Cargo.lock` | `0.12.2` moved to `syn 3` while `bevy_macro_utils` is on `syn 2`, and the mismatched `syn` types break the `bevy_encase_derive` proc macro. Do not `cargo update -p encase` past this until upstream fixes it. (`syn 3` itself is compiled anyway via `bytemuck_derive`; the pin is about the type mismatch, not build time.) |
+| `opt-level = 0` for our crate, `3` for dependencies | Our code compiles fast; Bevy is compiled once and cached. Raise ours only after **measuring** a real hot loop — meshing is the named trigger. |
+| Bevy feature trimming and a faster linker are staged, not enabled | Both force a full rebuild, so they ride along with the next dependency change, and only after asking. |
+
+### Layout
+
+| Decision | Why |
+| --- | --- |
+| `mod.rs` module style | Every module here has submodules, so the sibling-file style pairs each folder with a file and doubles the tree. Bevy is written this way too. |
+| `main.rs` holds only `mod` declarations and crate attributes | Setup belongs in `app`. The only reason to reopen it is adding a module. |
+| Every state lives under `states/`, one folder each; a sub-state's folder sits inside its parent's | The top level separates states from infrastructure, and the folders mirror the state hierarchy — `paused/` is in `ingame/` because `Paused` is a sub-state of `InGame`. |
+| The state machine lives in `states/mod.rs`; each state folder is private to it | Someone looking for `GameState` finds it where the states are. `app/` keeps only `run()` and the composition root. |
+| Domains are top-level siblings: `camera/`, `input/`, `window/`, `world/` | A module that owns a category of thing is a domain, not a utility. `window/` was promoted out of `utils/` once it split into two files by lifecycle. |
+| `utils/` holds only small, complete modules with no natural domain (currently just `log.rs`) | The bar is completeness with no natural home elsewhere, not size — kept narrow on purpose so it does not collect an in-progress design by default. |
+| One file per lifecycle when a module does both startup and runtime work | `window/` is `setup.rs` (once) plus `toggles.rs` (on keypress). |
+| Debug-only tooling lives in its own module behind one `#[cfg(debug_assertions)]` | `states/debug.rs` is compiled out of release as a whole — provably absent, not a cfg on every item. |
+| Engine plugin configuration lives inline in `AppPlugin::build`, not a separate adapter | Deciding which Bevy plugins run is a composition decision, the same kind as adding a domain plugin. Tried as `utils::engine` and reverted. |
+
+### Config
+
+| Decision | Why |
+| --- | --- |
+| Every configurable value lives in `config/`, one file per category: `window`, `input`, `camera`, `world` | One answer to "where do I change a setting?". A new category is a new file, not a decision. |
+| `config/` is `pub const` values; the only types allowed are small enums a setting chooses between (`SprintMode`) | A settings surface meant to be read in seconds. No structs or `Default` impls until values must load from disk at startup. |
+| Bevy enums used directly (`PresentMode`), never mirrored | A copy would lose the fallback semantics and need updating whenever Bevy's enum grows. "Let Bevy decide" is the *value* `AutoVsync`, not a separate mode. |
+| Values that are not player preferences stay with their owner, not in `config/` | Camera draw order and MSAA are rendering details; the pitch clamp is a safety limit. They live in `camera_*` / `input::look`. |
+| Config modules are imported under an alias when the bare name would read as the importing module | `use crate::config::input as controls` inside `input/`, `config::camera as config` inside `camera/`, `config::world as config` inside `world/`. |
+
+### Performance
+
+| Decision | Why |
+| --- | --- |
+| Rare triggers are run conditions, not `if`s inside systems | The system is skipped outright when its trigger is absent — no query fetch, no body. Chain with `.and_then(..)`; `.and()` is deprecated. |
+| Per-frame systems exit on the common case before querying or doing maths | At `opt-level = 0`, inlined glam maths runs unoptimised in our crate. Skipping it beats speeding it up. |
+| `AudioPlugin` and `GilrsPlugin` are disabled at runtime | No sound and no controllers exist. Both are leaf plugins. Re-enable Gilrs for controller support; delete the Audio line when the `audio` feature is dropped. |
+
+### States
+
+| Decision | Why |
+| --- | --- |
+| Each state's screen is self-contained; duplication is intentional | The screens are meant to diverge completely; a shared abstraction would have to be torn out. |
+| `Loading` is boot loading only | World generation is planned as `InGame`'s first sub-state and soft loading as a counted overlay, not a state. See [`LOADING.md`](LOADING.md). |
+| `Paused` is a sub-state of `InGame`, not a sibling | Makes "paused with no world loaded" unrepresentable instead of guarded at runtime. |
+| The pause screen is a translucent overlay (`OVERLAY` alpha `0.5`) | The world stays visible underneath. Earlier "too dark at any alpha" reports were the UI-texture accumulation bug, not the alpha. |
+
+### Camera and rendering
+
+| Decision | Why |
+| --- | --- |
+| `camera/` owns camera entities only; `input/` steers them through `WorldCamera` and `LookAngles` | Dependencies run one way, `input/` -> `camera/`. |
+| The UI camera is spawned at `Startup` and lives for the whole run; the world camera is spawned and despawned with `GameState::InGame` | State screens spawn only their own content and never contend over the view; nothing 3D renders in menus. |
+| Draw order: world camera `0`, UI camera `1` | The UI renders on top by construction. With no `IsDefaultUiCamera` marker, Bevy routes UI to the highest-order camera — mark one explicitly if a third camera is ever added. |
+| UI camera `Msaa::Off`; world camera `Msaa::Sample4` | UI quads and font-atlas text gain nothing from multisampling; a 4x UI target would be pure cost. Do not "fix" the mismatch by matching MSAA — see the next row. |
+| The UI camera clears its own texture to transparent (`ClearColorConfig::Custom(Color::NONE)`) and composites onto the window with `PREMULTIPLIED_ALPHA_BLENDING` | Because of the MSAA mismatch it renders into its own intermediate texture, so it must clear or every frame's UI piles onto the last. **Never** set it back to `ClearColorConfig::None`. |
+| FOV is `config::camera::FOV_DEGREES`, in degrees, applied as an explicit `Projection` at spawn | Degrees are what a person tunes; radians are converted at the one place that needs them. Explicit so the value is owned here, not an unseen Bevy default. |
+
+### Window
+
+| Decision | Why |
+| --- | --- |
+| `config::window::WIDTH`/`HEIGHT` are **logical** pixels | Same visual size at any OS scaling. |
+| On a live window, restore size with `window.resolution.set(..)`, never `window.resolution = WindowResolution::new(..)` | `set()` keeps the OS scale factor; a fresh `WindowResolution` resets it to `1.0` and shrinks the window on scaled displays. `WindowResolution::new` is only safe at window creation. |
+| `BORDERLESS` is stored as the inverse of Bevy's `decorations`; the inversion happens once, in `window/setup.rs` | Bevy models "draw the title bar". |
+| `present_mode` is applied in `window/setup.rs` | It is a property of Bevy's `Window`, not of a render plugin. |
+| Fullscreen means `BorderlessFullscreen(Current)`, one shared constant in `window/mod.rs`; the F10/F11 toggles are not gated on any state | Alt-tabs instantly and keeps the display mode. Leaving fullscreen should never depend on where the player is. |
+
+### Input
+
+| Decision | Why |
+| --- | --- |
+| `input/` holds controls that interpret input every frame; one-shot key actions live with what they change | Look, movement and cursor capture are continuous. Escape and F10/F11 are single actions whose logic belongs to their target, with the key as a run condition. |
+| All key bindings live in `config/input.rs`, never inline in a system | One visible set, and a unit test proves no key is bound twice. |
+| Descend is Left Shift | Requested. Freed Left Ctrl for the hold-to-sprint mode. |
+| Sprint is chosen by the compile-time `SPRINT_MODE`: `DoubleTap` (default) or `Hold` (`SPRINT_HOLD_KEY`, Left Ctrl) | Both styles exist; switching is a config edit and rebuild, not a runtime menu. The `#[allow(dead_code)]` on `SprintMode` is intentional — one variant is always unconstructed. |
+| `DoubleTap`: the *same* W/A/S/D key twice within `DOUBLE_TAP_WINDOW` (0.3 s); sprint stays on until every movement key is released | Minecraft's feel — no re-triggering on every direction change. |
+| No cursor re-grab on focus, no focus request after F10/F11, no Escape debounce | Each was added for a theory the logs disproved during the 2026-09-26 overlay bug, and removed. Re-add only with evidence (for example, logged `WindowFocused` loss). |
+
+### World
+
+| Decision | Why |
+| --- | --- |
+| `world/` owns voxel data only — chunk coordinates, storage, generation | Meshing and chunk rendering belong in `render/`. Keeping "what blocks exist" apart from "how they reach the screen" from the start. |
+| A chunk's blocks are one flat `Vec<Block>` indexed by a computed offset; never nested `Vec`s | One contiguous allocation; the layout meshing walks. (Which axis is slowest is still open — `AUDIT.md` 1.1.) |
+| `ChunkPos` is its own type, distinct from block coordinates, and a `Component`; `ChunkPos::containing` floors, never truncates | A chunk and a block coordinate cannot be swapped by mistake; flooring keeps negative coordinates in the right chunk. It's a `Component` so `render/` can tag a chunk's mesh entity with the position it renders. |
+| The chunk-data resource is `LoadedChunks`, never `World` | `world/mod.rs` glob-imports `bevy::prelude::*`, which exports Bevy's own ECS `World`. Two types of the same name in one file is a standing trap. |
+| Loaded chunks live in one resource (`HashMap<ChunkPos, Chunk>`), not one entity per chunk | Nothing about chunk *data* needs the ECS. The mesh entities `render/` spawns are what renders it. |
+| `RENDER_DISTANCE` is a **circular** (squared-distance) radius around the player's chunk on the same vertical layer, computed by one function (`in_render_distance`) shared by loading and eviction | A bounding square's corners are `sqrt(2)` chunks away — more chunks loaded than the radius implies, and inconsistent pop-in by direction. Sharing one function keeps load and evict from ever disagreeing about a chunk at the boundary. See 2026-09-27. |
+| Chunks outside render distance are evicted (dropped from `LoadedChunks`, firing `ChunkUnloaded`) as the player moves; the whole map is reset in one step on leaving `GameState::InGame`, without firing `ChunkUnloaded` per chunk | Streaming needs unloading, not just loading, or memory (and eventually stale data) only grows. The exit case doesn't message per chunk because `render/` clears its own entities independently on the same transition. |
+| `CHUNKS_ABOVE_SEA_LEVEL` / `CHUNKS_BELOW_SEA_LEVEL` stay commented out in `config/world.rs` | Requested. Nothing reads them until generation has a sea level; reading them sooner would pretend they mean something. |
+| `generation::generate` is a pure function (no ECS, no I/O) | Unit-testable directly, and movable onto a background task pool unchanged. |
+| `world::debug` (chunk locking) can freeze loading/unloading for testing, behind a hotkey (`F9`) | Requested, as the first of what will be several testing features. Sets the pattern below for all of them. |
+
+### Testing tools (`config::debug`, `*::debug`)
+
+| Decision | Why |
+| --- | --- |
+| Every testing feature is gated twice: `#[cfg(debug_assertions)]` (compiled out of release entirely) *and* `config::debug::TESTING_TOOLS_ENABLED` (a plain runtime `bool`, debug builds only) | The first guarantees a testing tool can never reach a shipped build, structurally, matching `states::debug`'s existing standing decision. The second is independent of that: being a debug build isn't the same as *actively testing* right now, so a stray hotkey press during ordinary debug-build play can't silently trigger a testing feature. |
+| The state a testing feature needs (e.g. `world::ChunkLock`) is a normal, unconditional resource; only the hotkey that *changes* it lives in the `#[cfg(debug_assertions)]` module | So the systems that read it (e.g. `load_chunks_around_player`'s run condition) are identical in every build — always "off" in release, since nothing there can ever set it otherwise — rather than needing `Option<Res<_>>` or a second code path. |
+| A testing feature's registration is skipped outright with a plain `if TESTING_TOOLS_ENABLED { app.add_systems(..) }`, not a `run_if` on the system | When disabled, the system is never in the schedule at all, not added-then-skipped every frame. |
+| Testing-feature key bindings still live in `config/input.rs`, under the existing debug section, not in `config/debug.rs` | All key bindings live in one place regardless of owner, so the "no key bound twice" test covers them too. `config/debug.rs` holds the non-binding switch (`TESTING_TOOLS_ENABLED`) that gates whether those bindings do anything. |
+
+### Render
+
+| Decision | Why |
+| --- | --- |
+| `render/` owns turning loaded chunks into what's on screen — meshing, materials, and the chunk mesh entities' lifecycle; `world/` never imports it | One-way dependency, `render/` -> `world/`, the same direction as `input/` -> `camera/`. |
+| `world/` and `render/` communicate through `ChunkLoaded`/`ChunkUnloaded` messages, not by `render/` polling `LoadedChunks` for changes | Event-driven: `render/`'s systems do nothing on a frame with no messages, instead of diffing a `HashMap` every frame whether or not it changed. |
+| The mesher only emits a face where the neighbouring block isn't solid; it does not merge coplanar faces into larger quads | Face culling alone is the difference between ~390,000 vertices and a few thousand for a half-solid chunk. Full greedy meshing is a further optimisation, left for later. |
+| A chunk edge always counts as exposed when meshing — neighbouring chunks are never consulted | There is no lookup from `render/mesh` back into `LoadedChunks` yet. Correct today (`RENDER_DISTANCE` is `0`, so there is only ever one chunk); once raised, this draws harmless extra faces at chunk boundaries until cross-chunk lookups exist. |
+| One shared `Handle<StandardMaterial>`, built once at `Startup`, reused by every chunk mesh | Same reasoning as `scene.rs`'s one shared cube mesh, applied to the material instead. A texture atlas replaces this once there is more than one visible block type. |
+| Chunk mesh entities are tracked in a `HashMap<ChunkPos, Entity>` (`ChunkEntities`), not found by querying a marker component | A `ChunkUnloaded` needs to despawn one specific chunk's entity; a map lookup is one step, a query would scan every spawned chunk. |
+| The world's `DirectionalLight` is spawned and despawned by `render/`, tied to `GameState::InGame`, not `world/` | It exists purely to make chunk meshes visible — the same category of thing as the material they're given, not world data. |
+
+### Logging and process
+
+| Decision | Why |
+| --- | --- |
+| Log config lives in `utils/log.rs` and is set on `DefaultPlugins` in `AppPlugin` | `LogPlugin` is configured *on* `DefaultPlugins`; routing it through `main.rs` would plumb settings down only to hand them back. |
+| Log filters build on `DEFAULT_FILTER` rather than replacing it | Bevy's own defaults survive; ours stay additive. |
+| Audits are periodic: `AUDIT.md` is rewritten each time from its own checklist, and holds only *open* items | Decisions — accepted or rejected — are recorded here, so a later audit can compare instead of re-proposing. |
 
 ---
 
@@ -59,13 +155,22 @@ not re-proposed as if it were new.
 | All states nested under `states/` | One top-level folder per state | Each state should own its own folder rather than being a file in a shared one. |
 | One top-level folder per state | Every state under `states/`, still one folder each | The top level had started mixing states with infrastructure. Grouping kept the folder-per-state property that was the original point. |
 | UI camera `ClearColorConfig::None` ("draw over the world, don't erase it") | Clear to `Color::NONE`, premultiplied-alpha output | `None` is only correct when two cameras share an intermediate texture, which requires matching MSAA. Ours do not, so the UI texture was never cleared: a stuck, black-looking pause overlay and a frozen-looking view. See 2026-09-26. |
+| Pause overlay alpha `0.75` → `0.45` → `0.3` | `0.5` | Every value "looked black" because of the UI-texture accumulation bug above, not the alpha. Tuned back up once that was fixed. |
+| `regrab_on_focus_regained`, `Window::focused = true` after F10/F11, and a 0.25 s Escape debounce | Removed | Built for focus-loss and double-fire theories that the diagnostic logs disproved. |
+| Live window resize via `window.resolution = WindowResolution::new(..)` | `window.resolution.set(..)` | Reset the OS scale factor to `1.0`, so the window came back smaller after leaving fullscreen on scaled displays. |
+| Descend on Left Ctrl, sprint while holding Left Shift | Descend on Left Shift; sprint by double-tap, or holding Left Ctrl in `Hold` mode | Requested. |
 | `paused/` as a top-level sibling of `ingame/` | `states/ingame/paused/` | The folders now say what the state machine already said: `Paused` exists inside `InGame`. |
 | `camera_2d` / `camera_3d` | `camera_ui` / `camera_world` | Named for what each camera shows rather than how it renders. |
-| Engine plugin config in `utils/engine.rs` | Inline in `AppPlugin::build`, next to the domain plugin list | Disabling `AudioPlugin`/`GilrsPlugin` and swapping in our window/log plugins is deciding what the app is made of — composition, not an adapter that turns our config into one Bevy value like `window/` and `log.rs` do. |
+| Engine plugin config in `utils/engine.rs` | Inline in `AppPlugin::build`, next to the domain plugin list | Disabling `AudioPlugin`/`GilrsPlugin` and swapping in our window/log plugins is deciding what the app is made of — composition, not an adapter that turns our config into one Bevy value. |
 | `window/` inside `utils/` | `window/` as a top-level module | A two-file lifecycle split (`setup.rs` + `toggles.rs`) is a domain, not a small complete utility — a sibling of `camera/` and `input/`. |
+| `utils/` as "finished adapters between settings and the engine" | `utils/` as small, complete, domain-less modules | Once `window/` and the engine config moved out, only `log.rs` remained, and "adapter" no longer described the rule. |
+| `[lints.rust]` table in `Cargo.toml` | `#![deny(unsafe_code)]` in `main.rs` — **but the table was never actually deleted** | The "Even Better TOML" extension showed a false error for the table. The move is only half done; see `AUDIT.md` 2.4. |
 | Shared `states/screen.rs` helper | Per-state `screen.rs` | Self-contained states were preferred over DRY, since the screens are placeholders meant to diverge. |
 | `Paused` as a `GameState` variant | `InGameState::Paused` sub-state | Enforcing "only pausable from in-game" structurally beats a runtime guard. Done once `InGame` owned real resources, as planned. |
 | `ingame/screen.rs` placeholder | `ingame/scene.rs` | The flat colour was scaffolding; the 3D scene replaces it. |
+| `ingame/scene.rs` (six placeholder cubes and a light) | Removed; the light moved to `render/`, the cubes deleted outright | Real chunk meshes replace them, per the module's own doc comment ("replaced wholesale by the voxel world"). See 2026-09-27. |
+| `world::World` (chunk-data resource) | `world::LoadedChunks` | `World` shadowed Bevy's own ECS `World` type in a file that glob-imports `bevy::prelude::*`. Flagged in audit #2, fixed alongside the render work it made unavoidable to ignore. |
+| `RENDER_DISTANCE` as a bounding square | A circle, by squared distance, shared by loading and eviction through one function | A square's corners are `sqrt(2)` chunks away — more chunks loaded than the radius implies, and inconsistent pop-in by direction. See 2026-09-27. |
 | `GameConfig`/`WindowConfig`/`RenderConfig` structs | Plain `pub const` values | 68 lines of type machinery for 5 values. Nothing read the config after startup, so the types earned nothing. |
 
 ---
@@ -528,16 +633,250 @@ one set once at spawn. Reading: FOV is now visible in the settings surface
 alongside every other tunable, instead of needing to be known as "a Bevy
 default" to find.*
 
+**`world/` built: chunk coordinates, storage, and a placeholder generator.**
+First real slice of the voxel world, per the target shape `CLAUDE.md` already
+described. Scoped deliberately to *data* only — no meshing, no rendering, no
+real terrain — because each of those is its own sizable piece of work and
+`render/` is documented as a separate domain from `world/` for exactly this
+reason: mixing "what blocks exist" with "how they reach the screen" is what
+the split is meant to prevent from the start, not something to allow once and
+clean up later.
+
+`config::world` (`CHUNK_SIZE = 32`, `RENDER_DISTANCE = 0`) already existed
+before this change; it only needed wiring into `config/mod.rs`. Added on top:
+`ChunkPos` (a chunk coordinate, kept distinct from a block coordinate so the
+two can't be passed to the wrong place), `Chunk` (a flat `Vec<Block>`
+indexed by a computed offset — not nested `Vec`s, since meshing will walk
+every block in every loaded chunk), a two-variant `Block` (`Air`/`Solid`),
+and `generation::generate`, a pure `ChunkPos -> Chunk` function producing a
+flat placeholder floor (solid in the bottom half, identical at every
+position) rather than real terrain. `World`, a resource holding loaded
+chunks in a `HashMap<ChunkPos, Chunk>`, and `load_chunks_around_player`, a
+system gated on `GameState::InGame` that loops over every position within
+`RENDER_DISTANCE` of the player's chunk (evaluating to just the one chunk at
+the configured `0`) and generates whichever aren't loaded yet.
+
+The two sea-level constants stay commented out in `config::world` exactly as
+handed over — real generation needs a heightmap concept that doesn't exist
+yet, so reading them now would mean pretending they mean something they
+don't. `RENDER_DISTANCE`, unlike them, is live: the loop is written over the
+actual configured radius rather than special-cased to "just this chunk", so
+raising it later is a config edit, not a code change.
+
+Left alone on purpose: `scene.rs`'s placeholder cubes, still the only thing
+actually visible in `InGame` — they say in their own doc comment that they
+are "replaced wholesale by the voxel world", and that replacement is a
+rendering-layer change (`render/`), not this one. `[profile.dev]`'s
+`opt-level = 0` for our own crate is also untouched, per the standing note in
+`Cargo.toml` and `AUDIT.md` 1.3 to raise it once generation is a real,
+measured cost rather than 32,768 flat writes per chunk at `RENDER_DISTANCE`
+`0` — not yet.
+
+*Perf: generation is a nested loop over one chunk's blocks (`CHUNK_SIZE^3` =
+32,768 writes), run once per newly-entered chunk, not per frame — negligible
+even unoptimised. Storage is one `HashMap` lookup per frame while `InGame`,
+gated by a run condition so it costs nothing in any other state. Modularity:
+`world/` does not import anything rendering-related, so `render/` can be
+built against it later without either module needing to change shape.*
+
+**Audit #2.** A full scan of the code, docs, manifest and dependency tree
+(method and checklist at the bottom of `AUDIT.md`). `AUDIT.md` was rewritten
+from scratch with 21 open items; audit #1's items were all either done and
+already recorded here, or carried forward with their current status. No
+code changed in this pass. What changed in this file:
+
+- **Standing decisions rebuilt and grouped by area.** Seven rows were stale.
+  They named files that no longer exist (`app/log.rs`, `window.rs`,
+  `config.rs`), described "one persistent camera" when there are two, or
+  contradicted each other (two different definitions of `utils/`, and two
+  rows for debug gating). All were corrected in place. The old `utils/`
+  definition moved to Reversals.
+- **Decisions from the last two sessions added as rows:** Left Shift descends;
+  the two sprint modes and their compile-time toggle; the double-tap rules;
+  FOV in degrees as an explicit `Projection`; the logical-pixel `.set()`
+  rule for live window resizing; the UI/world camera MSAA split and draw
+  order; the overlay alpha; every `world/` design choice (data-only scope,
+  flat storage, `ChunkPos` flooring, a resource rather than entities, the
+  horizontal render-distance square, commented-out sea-level constants,
+  pure generation); and the rule that audits are periodic, with decisions
+  landing here.
+- **Reversals added:** the three diagnostic-era additions that were removed
+  (focus re-grab, focus request, Escape debounce), the overlay alpha
+  sequence, the live-resize fix, the control rebinding, and the
+  `[lints.rust]` move, which audit #2 found was only half done.
+- **"Known open items" removed.** It was stale in three of its four bullets:
+  "the repository has no commits", "nothing has been visually verified", and
+  a renamed function. It also duplicated what `AUDIT.md` tracks. Open items
+  now live in one place.
+
+Two claims made by earlier work were found to be false, and are corrected
+in `AUDIT.md` rather than here, since they are open items:
+
+- Audit #1 said `.cargo/config.toml` existed with staged linker settings.
+  Git has never tracked it (1.3).
+- The `unsafe_code` lint was said to have "moved to `main.rs`". The
+  `Cargo.toml` table was never deleted (2.4).
+
+The lesson for the next audit is to check claims about files against git,
+not against the log.
+
+### 2026-09-27
+
+**Chunks render: `render/` built, `LoadedChunks` streams in both
+directions, and the placeholder scene is gone.** First working slice of
+"a world where multiple chunks can spawn and despawn" — until now `world/`
+only ever generated data, nothing was ever unloaded, and nothing was drawn.
+
+**Render distance is now a circle, not the bounding square.** Discussed
+before building it: a square radius includes corners `sqrt(2)` chunks away,
+noticeably farther than the radius implies (about 27% more chunks for the
+same nominal distance), and pops chunks in at an inconsistent distance
+depending on the direction of travel — most games use a circle for exactly
+this reason. `in_render_distance(pos, center, radius)` is the one function
+both the load loop and the new eviction step call, so they can't disagree
+about a chunk sitting at the boundary. Five unit tests pin the shape down,
+including the specific corner case a square would get wrong. At the
+configured `RENDER_DISTANCE = 0` a circle and a square are identical (both
+are just the center chunk), so this cost nothing to get right immediately
+rather than reworking it once `RENDER_DISTANCE` actually changes shape.
+
+**Chunks now unload, not just load.** `load_chunks_around_player` evicts
+every loaded chunk that `in_render_distance` no longer accepts, before
+loading whatever's newly in range, so the two steps never leave both an old
+and new chunk in the same slot. This is also what the "despawn" half of
+"spawn and despawn" needed at the data level — previously walking between
+chunks only ever grew `LoadedChunks`, never shrank it (audit #2, 3.2).
+Leaving `GameState::InGame` still resets the whole map in one step rather
+than evicting chunk-by-chunk, since re-entering should generate fresh.
+
+**`world::World` renamed to `LoadedChunks`.** It shadowed Bevy's own ECS
+`World` type in a file that glob-imports `bevy::prelude::*` — flagged in
+audit #2 (2.3), fixed now because `render/` needing to reference it made
+the collision risk real rather than theoretical.
+
+**`ChunkLoaded`/`ChunkUnloaded` messages connect `world/` and `render/`.**
+`render/` needed to know when a chunk's data changed without polling
+`LoadedChunks` every frame regardless of whether anything did. `world/`
+fires a message on each load and each eviction; `render/` only touches the
+ECS on a frame something actually happened. `world/` has no idea `render/`
+exists — it just declares message types and writes to them — keeping the
+dependency one-way, `render/` -> `world/`.
+
+**New `render/` module: `mesh.rs`, `material.rs`, `mod.rs`.** `mesh.rs`
+builds a `Mesh` from a `&Chunk` in the chunk's own local space, only
+emitting a face where the neighbouring block isn't solid — a naive mesher
+emitting all six faces of every solid block would be roughly 390,000
+vertices for a half-solid chunk, almost all of them faces buried against a
+neighbour the camera can never see. This is face culling only, not full
+greedy meshing (merging coplanar faces into larger quads); that's a further
+optimisation for later. A chunk edge always counts as exposed, since
+neighbouring chunks aren't consulted yet — harmless at `RENDER_DISTANCE = 0`
+(there's only ever one chunk), and flagged for when that changes.
+`material.rs` builds one shared green `StandardMaterial`, reused by every
+chunk mesh — a texture atlas replaces it once there's more than one visible
+block type. `mod.rs` reacts to the two messages: `spawn_chunk_meshes` meshes
+a newly-loaded chunk and spawns it (`Mesh3d`, the shared material, a
+`Transform` at `ChunkPos::origin`, and the `ChunkPos` itself as a
+component); `despawn_chunk_meshes` looks the entity up in a
+`HashMap<ChunkPos, Entity>` and removes it. Leaving `GameState::InGame`
+clears every chunk entity in one pass, independent of `ChunkUnloaded`,
+since `world/`'s exit-time reset doesn't message per chunk either.
+
+**`ChunkPos` widened to a `Component`, and `Chunk::empty`/`set_block`
+widened to `pub(crate)`.** The former tags each mesh entity with the chunk
+it renders. The latter let `render/mesh`'s tests build chunks by hand to
+exercise face culling directly (an isolated block gets all six faces; two
+adjacent blocks cull the one face between them; an empty chunk produces no
+geometry) without going through generation — `Chunk::block` had already
+lost its `#[allow(dead_code)]` the moment the mesher became a real caller
+(audit #2, 4.3).
+
+**`ingame/scene.rs` deleted.** The six placeholder cubes are gone outright,
+as requested — real chunk meshes replace them, exactly what the module's
+own doc comment said would happen. Its `DirectionalLight` moved to
+`render/mod.rs` instead of disappearing with the rest: chunk meshes need a
+light to be visible at all, and lighting the world is the same category of
+job as giving it a material, not a leftover of the old scene.
+
+**World camera spawn height raised, `8, 6, 16` to `8, 22, 16`.** Audit #2
+(4.1) flagged that the old height was inside the generated ground —
+harmless while nothing rendered, but the first thing anyone would have hit
+the moment chunk meshes existed. Fixed alongside rather than left as a
+"why am I underground" bug to debug separately. Still a constant, not
+derived from the world — that's real spawn-point logic for later, once
+terrain isn't a flat placeholder.
+
+*Perf: eviction and loading are each one `HashMap` operation per candidate
+chunk per frame while `InGame`, same order of cost as before. Meshing runs
+once per `ChunkLoaded`, not per frame — a few thousand vertices for the one
+currently-loaded chunk, negligible even unoptimised. Modularity: `render/`
+depends on `world/` and nothing else; `world/` still doesn't know `render/`
+exists. Correctness: verified with 24 tests (11 new — 5 for the circular
+distance, 3 for face culling, and existing chunk/generation coverage
+unchanged), a clean `cargo clippy -- -D warnings`, and a boot run confirming
+no panic on startup. Not driven into `InGame` interactively — this
+environment can't send keypresses to the running window — so the actual
+on-screen result (does the chunk look right, is the winding correct so
+faces don't render inside-out) still needs your eyes.*
+
+**Confirmed working, then: `RENDER_DISTANCE` raised to `1`, and a chunk-lock
+testing toggle added.** With rendering now in and confirmed, `RENDER_DISTANCE`
+moved from `0` to `1` — a 5-chunk plus shape (the centre and its four
+straight-line neighbours; the diagonal corners a bounding square would
+include stay excluded, per the circle decision above). Requested alongside:
+a way to freeze chunk streaming for testing, so a fixed set of chunks can be
+inspected without new ones loading or old ones unloading as the camera moves.
+
+New `world::ChunkLock` (a plain `bool` resource, unconditional in every
+build) gates `load_chunks_around_player` through a `chunk_loading_unlocked`
+run condition — locked, the system doesn't run at all, so whatever was
+loaded the moment it engaged simply stays. Only *toggling* the lock is
+debug-only: `world::debug` (new, `#[cfg(debug_assertions)]`) registers an
+`F9` hotkey (`config::input::TOGGLE_CHUNK_LOCK`, added to the existing debug
+key section) that flips it, but only if the new
+`config::debug::TESTING_TOOLS_ENABLED` is also `true`.
+
+That's two independent gates on purpose, not redundancy: `#[cfg(debug_assertions)]`
+means a testing feature cannot exist in a release binary, structurally,
+matching `states::debug`'s standing decision for the jump keys.
+`TESTING_TOOLS_ENABLED` means a *debug* build doesn't default to every
+testing feature being live either — being a debug build isn't the same as
+actively testing right now, and the fewer things a stray keypress can do
+during ordinary dev play, the fewer surprises. This is meant as the template
+for every testing feature the user mentioned more of coming: state always
+exists and reads the same everywhere; only the code that *changes* that
+state is gated, twice.
+
+*Perf: one extra `bool` resource read per frame while `InGame` (the run
+condition), zero cost in release (the toggle path doesn't exist to even
+check). Modularity: `world/debug.rs` mirrors `states/debug.rs` exactly —
+same cfg, same "delete once no longer needed" shape — so a reader who
+already knows one recognises the other. Correctness: `cargo check`,
+`cargo clippy -- -D warnings`, `cargo test` (24 pass, unchanged — no new
+pure logic here worth a unit test beyond what a boot-and-press-F9 check
+covers) and a boot run all clean. Not confirmed by eye: does `F9` actually
+freeze the display; that needs the game running interactively, which this
+environment can't do.*
+
+**Chunk lock can now start pre-engaged.** Requested: a way to have the world
+start locked without pressing `F9` first. `config::debug::CHUNK_LOCK_INITIALLY_ENGAGED`
+(debug builds only) drives `ChunkLock`'s `Default` impl (previously derived,
+always `false`; now hand-written).
+
+Guarded by `TESTING_TOOLS_ENABLED` as well as its own value — not because it
+was asked for, but because without that guard, setting only
+`CHUNK_LOCK_INITIALLY_ENGAGED = true` while leaving `TESTING_TOOLS_ENABLED`
+at its default `false` would start the world locked with **no way to unlock
+it**, since the `F9` hotkey itself is only registered when testing tools are
+enabled. Both constants now have to agree for the world to start locked. In
+release, `ChunkLock` still always defaults to `false` — a separate `cfg`'d
+constant, not a runtime check of the debug-only ones, since those don't
+exist to check in a release compile. *Perf: none, a startup value. Modularity:
+none, a one-line addition to the pattern the previous entry already set.*
+
 ---
 
-## Known open items
+## Open items
 
-- **The repository has no commits.** Everything, including `Cargo.toml`, is
-  untracked. There is no safety net under any of this.
-- **Nothing has been visually verified.** The placeholder screens and window
-  settings type-check but have not been confirmed on screen.
-- **Release builds have no console** (`windows_subsystem = "windows"`), so
-  logs go nowhere there. Diagnosing a release build needs a file layer via
-  `LogPlugin::custom_layer`.
-- **Temporary scaffolding to delete**: the placeholder state screens and
-  `debug_jump_to_state`.
+Everything identified but not yet done lives in [`AUDIT.md`](AUDIT.md),
+ranked by tier. This file only records decisions once they are made.

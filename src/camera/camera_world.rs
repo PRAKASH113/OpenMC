@@ -41,7 +41,13 @@ pub struct LookAngles {
 const ORDER: isize = 0;
 
 /// Where the camera starts, looking back at the origin.
-const START_POSITION: Vec3 = Vec3::new(8.0, 6.0, 16.0);
+///
+/// The `y` matters more than it looks: `world::generation`'s placeholder
+/// shape fills the bottom half of the spawn chunk with solid blocks (up to
+/// `CHUNK_SIZE / 2`, currently 16), so anything at or below that is spawning
+/// inside the ground. `22` sits comfortably above it — revisit once spawn
+/// height is derived from the world instead of a constant (`docs/AUDIT.md`).
+const START_POSITION: Vec3 = Vec3::new(8.0, 22.0, 16.0);
 
 /// Spawns the world camera with each world, and removes it afterwards.
 pub struct WorldCameraPlugin;

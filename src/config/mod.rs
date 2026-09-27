@@ -9,5 +9,7 @@
 //! [`window`], and the systems that read input use [`input`] directly.
 
 pub mod camera;
+pub mod debug;
 pub mod input;
 pub mod window;
+pub mod world;

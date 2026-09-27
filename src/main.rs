@@ -20,9 +20,11 @@ mod app;
 mod camera;
 mod config;
 mod input;
+mod render;
 mod states;
 mod utils;
 mod window;
+mod world;
 
 use bevy::prelude::AppExit;
 

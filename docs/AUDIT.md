@@ -1,274 +1,356 @@
 # Audit
 
-A review of everything built so far, against the four priority tiers in
-`CLAUDE.md`. **Nothing here is implemented** — this is a list of candidates
-for you to accept, reject, or defer.
+**Audit #2 — 2026-09-26.** Replaces audit #1 (2026-09-19) completely; every
+item from #1 was either done, recorded in [`IMPROVEMENTS.md`](IMPROVEMENTS.md),
+or carried forward below with its current status.
 
-[`IMPROVEMENTS.md`](IMPROVEMENTS.md) records decisions already *made*. This
-file records ones still *open*. When something here is acted on, it should
-move there.
+**Updated 2026-09-27, not re-run in full.** Building `render/` (chunk
+meshing and the chunk mesh lifecycle) resolved four items outright — 2.3
+(`World` renamed to `LoadedChunks`), 3.2 (chunks now unload), 4.1 (spawn
+height moved above ground), and 4.3 (`Chunk::block` gained a real caller, so
+the dead-code question is moot) — and fixed one doc comment 2.5 flagged
+(`RENDER_DISTANCE`'s "3×3 ring" wording). All five are removed below rather
+than left marked done; see `IMPROVEMENTS.md`'s 2026-09-27 entry for what
+changed and why. Everything else here is unchanged from audit #2 and has not
+been re-checked against the current code.
 
-Current size: 1,366 lines of Rust across 30 files. Largest file is
-`config/input.rs` at 127 lines (including its test); no source file exceeds
-it. Nothing is close to the 800-line limit, so none of these are urgent.
+This file lists improvements that are identified but **not yet done**,
+ranked by the four tiers in `CLAUDE.md`. Nothing here has been implemented.
+When an item is acted on or rejected, move it to `IMPROVEMENTS.md` (a change
+log entry, and a standing-decision row if it sets a rule) and delete it here.
+Before proposing anything, check the standing decisions table in
+`IMPROVEMENTS.md`: an idea that contradicts a row there needs a conversation
+about that row, not a quiet change.
+
+**Scope scanned (2026-09-26):** all 35 Rust files (1,899 lines, largest
+190), `Cargo.toml`, `Cargo.lock`, `.gitignore`, every file in `docs/`,
+`README.md`, and the parent `CLAUDE.md`. Also run: `cargo clippy -- -D
+warnings` (clean), `cargo test` (15 pass), a `clippy::pedantic` +
+`clippy::nursery` pass, and `cargo tree -d`. Now 37 files (2,356 lines,
+largest 246) after adding `render/`, but the scan itself has not been
+repeated — treat file/line counts and the pedantic/nursery and `cargo tree`
+findings below as of the 26th, everything else as still current. How to
+repeat this scan is at the bottom of the file.
+
+---
+
+## Summary
+
+| ID | Tier | Finding | Effort | Recommendation |
+| --- | --- | --- | --- | --- |
+| 1.1 | Perf | Chunk storage order and generation loop order disagree | Small | Do before meshing |
+| 1.2 | Perf | Chunk loading runs every frame, even paused and standing still | Tiny | Do |
+| 1.3 | Build | No linker config; audit #1 said one was staged, but it never existed | Small | Ask first (rebuild) |
+| 1.4 | Build | Unused Bevy features still compiled | Small | Carry over: next dependency change |
+| 1.5 | Perf | `opt-level = 0` for our crate | Tiny | Carry over: measure once meshing exists |
+| 1.6 | Perf | Chunk generation runs synchronously on the main thread | Medium | Later: when `RENDER_DISTANCE > 0` |
+| 2.1 | Read | README controls table and module tree are wrong | Tiny | Do |
+| 2.2 | Read | ARCHITECTURE "Startup configuration" describes deleted modules | Small | Do |
+| 2.4 | Read | `unsafe_code` lint declared twice; comment contradicts `Cargo.toml` | Tiny | Decide which one to keep |
+| 2.5 | Read | Stale or inaccurate doc comments in 7 places | Small | Do |
+| 2.6 | Read | `CLAUDE.md` "What exists today" is missing `world/` and `render/` | Tiny | Do |
+| 3.1 | Mod | `fly` is at the ~50-line limit, with sprint logic inline and untested | Small | Do |
+| 3.3 | Mod | `world/` finds the player through the camera | — | Note only: revisit with `player/` |
+| 4.2 | Other | Test gaps: look clamp, `Hold` sprint, plugin wiring | Small–Med | Do the first two |
+| 4.4 | Other | Runtime checks still unconfirmed | — | Check by eye |
+| 4.5 | Other | Release builds cannot log anywhere | Medium | Carry over: before a release |
+| 4.6 | Other | Temporary scaffolding still to delete | — | Carry over: as replacements land |
 
 ---
 
 ## Tier 1 — Performance
 
-### 1.1 Unused Bevy features are being compiled — **staged, commented out**
+### 1.1 Chunk storage order and generation loop order disagree
 
-Written into `Cargo.toml` as three commented steps, deliberately not enabled:
-turning any of them on recompiles all of Bevy, so it should ride along with
-the next dependency change instead of costing a rebuild on its own.
+`Chunk::index` stores blocks as `x + y*S + z*S²`, so **x** is the
+fastest-changing axis and **z** the slowest. `generation::generate` loops
+`x → z → y` with **y innermost**, so every write jumps 32 blocks forward
+instead of moving to the next byte. It also calls `set_block` once per
+block, and each call runs a three-way bounds `assert!` — 16,384 asserts at
+`opt-level = 0` for a shape that is really one contiguous fill.
 
-The `Camera2d` question below is now **resolved**: `ui_bevy_render` already
-pulls in `bevy_core_pipeline`, which contains the Core2d render pass, and
-`2d_api` is only `bevy_sprite`. This game never spawns a `Sprite`, so the `2d`
-feature looks droppable — read off the feature graph, so still worth one
-compile to confirm the UI draws.
+At today's size (a 32 KB chunk, one chunk loaded) this costs nothing
+measurable. It matters because **meshing will be built on whatever order
+exists when it starts**, and changing the order later means rewriting both.
 
-Also found: the `3d` umbrella hardcodes `bevy_gltf` and `gltf_animation`, and
-this game loads no models — its meshes are generated in code. Dropping that
-means hand-listing the `3d` sub-features, which is recorded as a later step.
+**Recommendation:** decide the order now and write it down. Store blocks
+with **y slowest** (`x + z*S + y*S²`, "YZX", the layout Minecraft uses), so
+each horizontal layer is one contiguous run. Placing terrain by height —
+what generation does — then becomes range fills, and the placeholder floor
+becomes `blocks[..S*S*S/2].fill(Solid)`. Loops that walk blocks then go
+`y → z → x`. Keep `set_block` for single edits. Add a unit test that pins
+the index formula so it cannot drift silently.
 
-The original finding follows.
+### 1.2 Chunk loading runs every frame, even paused and standing still
 
-### 1.1a Original finding
+`load_chunks_around_player` is gated on `GameState::InGame` only. It runs
+while paused, and on every frame the player hasn't moved, when the answer
+can't have changed. Each run is a query, a float→int conversion, and a
+`HashMap` lookup per chunk in range.
 
-**Build time. The biggest single win available right now.**
+**Recommendation:** add `Changed<Transform>` to its query. `CLAUDE.md`'s
+own rule is "use query filters to shrink iteration instead of filtering
+inside the system". Standing still, and all of `Paused`, then cost an empty
+query match.
 
-`Cargo.toml` uses `bevy = "0.19"` with default features, which are
-`["2d", "3d", "ui", "audio"]`. Those expand further — `2d`, `3d` and `ui` all
-pull in `picking`, and `audio` pulls in `bevy_audio` plus `vorbis`, an Ogg
-decoder.
+### 1.3 No linker configuration — and audit #1's claim was wrong
 
-The game currently uses **no audio and no picking at all**. Every one of
-those crates is compiled, linked, and carried in the binary for nothing.
+Audit #1 item 1.2 said `.cargo/config.toml` "now exists" with commented
+`rust-lld` blocks. **It does not exist, and git has never tracked it**; it was
+probably written outside the repo folder. So nothing is staged.
 
-Turning them off means `default-features = false` and re-adding what is
-needed, which is fiddly to get right the first time.
+The finding itself still stands. On Windows every incremental build links a
+very large Bevy binary with MSVC's `link.exe`, the slowest step of each
+edit–compile cycle. Using `rust-lld` (shipped with the Rust toolchain) is
+low-risk and usually cuts seconds off every build.
 
-**One caveat I could not resolve without testing:** the UI camera is
-`Camera2d`, which may come from the `2d` feature rather than `ui`. If so,
-`2d` cannot simply be dropped. Worth testing rather than assuming — the
-`audio` removal is safe regardless.
+**Recommendation:** ask first. Changing the linker may invalidate the build
+cache and relink or rebuild everything once. Measure a warm incremental
+build before and after with `cargo build --timings` so the change is
+justified by numbers.
 
-### 1.2 No linker configuration — **staged, commented out**
+### 1.4 Unused Bevy features are still compiled — carried over
 
-`.cargo/config.toml` now exists with `rust-lld` blocks for Windows, Linux and
-macOS, all commented. Same reason: enabling it forces a full rebuild. It also
-carries the `cargo build --timings` recipe for measuring whether it actually
-helped, so the change can be justified rather than assumed.
+Still staged as three commented steps in `Cargo.toml` (drop `audio`; also
+drop `2d`; later, `3d` without glTF). Unchanged since audit #1: enabling any
+step recompiles all of Bevy, so it should ride along with the next
+dependency change. New since then: the dependency tree shows `bevy_gltf`
+and `bevy_animation` are compiled for a game that loads no models, which
+strengthens the case for step 3.
 
-The original finding follows.
+### 1.5 `opt-level = 0` for our crate — carried over, closer to due
 
-### 1.2a Original finding
+Standing decision: stays `0` until measured. The trigger audit #1 named was
+"once chunk meshing and terrain generation exist". Generation now exists,
+but as a trivial placeholder run once per chunk, so it is not the tight
+loop the note meant. **Meshing is the real trigger.** When it lands, profile
+a chunk mesh at `0` and `1` and decide from the numbers.
 
-**Build time.** Bevy links a very large binary, and on Windows the default
-MSVC linker is the slowest part of every incremental rebuild. Switching to
-`rust-lld` via `.cargo/config.toml` is a well-documented, low-risk change
-that typically cuts several seconds off *every* edit-compile cycle. There is
-currently no `.cargo/config.toml` at all.
+### 1.6 Chunk generation runs synchronously on the main thread
 
-Bevy's `dynamic_linking` feature is the other standard dev speedup — it
-links Bevy as a shared library so it is not re-linked each time. It is
-dev-only and must not ship in release.
+`generate` is called inside a system, so a chunk is built within the frame
+that needs it. That's fine at `RENDER_DISTANCE = 0`: one chunk, once. At
+radius 8 it is 289 chunks, and entering a new chunk row generates 17 in one
+frame, a visible hitch.
 
-### 1.3 `opt-level = 0` — **kept deliberately; code written to suit it**
+**Recommendation: later, not now.** `generate` is already a pure function
+(no ECS access), so moving it onto `AsyncComputeTaskPool` needs no change to
+the function itself. [`LOADING.md`](LOADING.md) already plans initial world
+generation as `InGame`'s first sub-state. Do this when `RENDER_DISTANCE` is
+first raised above `0`.
 
-Decision: stays at `0` for now, raised later. Until then, per-frame code is
-written so unoptimised builds pay as little as possible — see the conventions
-added to `CLAUDE.md` and item 1.4.
-
-The key fact that shapes this: glam's maths functions are `#[inline]`, and an
-inline function is compiled into the *calling* crate at the *caller's*
-opt-level. So vector and quaternion maths inside our systems runs fully
-unoptimised, even though Bevy and glam themselves are built at `opt-level 3`.
-The cheapest defence is not running that maths on frames that do not need it.
-
-Still true for later: chunk meshing and terrain generation are tight numeric
-loops that commonly run 10–50x slower unoptimised, so expect to raise this to
-`1` once they exist — and measure rather than guess. The `Cargo.toml` comment
-that contradicted the setting has been fixed.
-
-### 1.4 Per-frame systems that could be event-driven — **done**
-
-Every system that runs each frame was reviewed, including Bevy's own plugins.
-
-**Converted to run conditions** — the system is skipped outright on every
-frame without its trigger, so there is no query fetch and no body:
-
-- `toggle_borderless` / `toggle_fullscreen` — `run_if(input_just_pressed(..))`
-- `pause::toggle` — `in_state(InGame).and_then(input_just_pressed(PAUSE))`.
-  `and_then` short-circuits, so the key is only checked inside a world.
-  (`.and()` is deprecated in this Bevy version.)
-
-**Reordered so the common case exits first:**
-
-- `fly` reads the six movement keys *before* querying the camera or doing any
-  maths. Standing still now costs six key lookups; previously it also did a
-  camera query and two quaternion rotations (`forward()`, `right()`) every
-  frame. The key-to-axis logic moved into a plain `axis()` function with unit
-  tests, including that opposing keys cancel.
-- `look` sums the frame's mouse deltas and returns before the query if the
-  sum is zero. It also now does one angle update and one quaternion rebuild
-  per frame, however many motion events arrived. Side effect: pitch is clamped
-  once on the summed movement rather than per event, which is if anything
-  more faithful to what the mouse actually did.
-
-**Two engine plugins disabled** at runtime in `AppPlugin` — no Bevy recompile:
-
-- `AudioPlugin` — no sound exists, but it opened an output device and kept an
-  audio thread alive all session.
-- `GilrsPlugin` — no controller support exists, but it polled the OS for
-  gamepad events every frame.
-
-Both were confirmed to be leaf plugins (no Bevy crate depends on
-`bevy_audio` or `bevy_gilrs`), and a 15-second run showed a clean startup.
-
-**Considered and deliberately left:**
-
-- `log_state_change` — an `on_message` run condition would perform the same
-  empty-queue check the system already does, so it would save nothing.
-- `states::debug::jump_to_state` — three key lookups, debug builds only. Chaining three
-  run conditions would cost more than it saves.
-- Picking, animation, gizmos, scene and sprite plugins also run per-frame
-  systems over empty queries. They were not disabled: `bevy_ui` depends on
-  `bevy_sprite`, glTF loading depends on the animation and scene plugins, and
-  menu buttons will soon need picking. Disabling them is a feature-level job
-  (see 1.1), not a runtime one.
+**Same trigger, a second item:** `render::mesh` never looks past its own
+chunk's data — a block at a chunk edge always gets its boundary face, even
+where a neighbouring chunk would actually hide it. Harmless today (there is
+only ever one loaded chunk, so there is no neighbour to hide it *from*), but
+it means real double-sided faces drawn at every chunk seam once
+`RENDER_DISTANCE > 0`. Fixing it needs `mesh.rs` to read the *other*
+chunk's edge blocks from `LoadedChunks`, which does not exist as a
+capability yet. Do alongside raising `RENDER_DISTANCE`, not before.
 
 ---
 
 ## Tier 2 — Readability and discoverability
 
-All four tier 2 items are resolved. Details are in `IMPROVEMENTS.md`.
+### 2.1 README controls table and module tree are wrong
 
-### 2.1 The folder structure disagreed with the state machine — **done**
+`README.md` is the first thing a stranger reads, and it currently says:
 
-`paused/` now lives at `states/ingame/paused/`, inside its parent, so the
-folder layout mirrors the state hierarchy it implements.
+- `Left Ctrl` flies down. It is `Left Shift` now.
+- `Left Shift` sprints. Sprint is now a double-tap of W/A/S/D, or holding
+  `Left Ctrl` when `SPRINT_MODE` is `Hold`.
+- The module tree has no `world/`, and does not list `config/camera.rs` or
+  `config/world.rs`.
+- "Terrain, chunks … are next". Chunk data now exists; rendering is next.
 
-### 2.2 Camera modules named by technology, not purpose — **done**
+**Recommendation:** fix all four. Point the controls table at
+`config/input.rs` as the source of truth, so it is easier to keep in sync.
 
-`camera_2d.rs` became `camera_ui.rs` and `camera_3d.rs` became
-`camera_world.rs` (plugins `UiCameraPlugin` and `WorldCameraPlugin`). Both are
-now named for what they show.
+### 2.2 ARCHITECTURE "Startup configuration" describes deleted modules
 
-### 2.3 Settings lived in two unrelated places — **done**
+The section talks about `app::config`, `app::window::primary_window_plugin`
+and `app::window::WindowControlPlugin`. None of these has existed since the
+tier-2 and tier-3 restructures (they are `config::window`,
+`window::setup::primary_window_plugin` and
+`window::toggles::WindowControlPlugin`). Most of its content also repeats
+the later "Configuration" and "Window" sections.
 
-`config/` holds `window.rs` and `input.rs`; a new category is a new file.
+**Recommendation:** delete the section. Move its two unique points into
+"Configuration" and "Window": why Bevy enums are used directly
+(`PresentMode`'s fallback chain), and "constants describe startup; the live
+`Window` component is what changes at runtime".
 
-### 2.4 Top-level `src/` mixed states with infrastructure — **done**
+### 2.4 The `unsafe_code` lint is declared twice, and the comment is wrong
 
-Every state now lives under `states/`, each in its own folder, together with
-the state machine in `states/mod.rs`. The top level is five folders of
-infrastructure plus `states/`, and a new state never adds a top-level folder.
-This keeps the one-folder-per-state property that was asked for originally;
-what changed is that the folders gained a common parent.
+`Cargo.toml` still has an active `[lints.rust] unsafe_code = "deny"` table.
+The comment directly under it says the lint is set in `main.rs` "rather
+than" in that table. `main.rs` also has `#![deny(unsafe_code)]`. Git shows
+the table was never removed when the lint moved. So the editor warning that
+the move was meant to silence is presumably still there, and a reader cannot
+tell which declaration is the real one.
+
+**Recommendation — pick one:**
+
+- **(a) Delete the table.** This finishes the original decision. The IDE
+  warning goes away, and the comment becomes true.
+- **(b) Keep the table, delete the `main.rs` attribute and fix the comment.**
+  Choose this if the editor warning no longer appears (for example, after an
+  extension update). `[lints]` is the form that also covers future
+  `tests/`, benches, and workspace members.
+
+Either way, update the matching notes in `main.rs`, `Cargo.toml` and
+`CLAUDE.md` together.
+
+### 2.5 Stale or inaccurate doc comments
+
+| Where | Says | Should say |
+| --- | --- | --- |
+| `app/mod.rs` header | the window is built by "finished adapters … in `crate::utils`" | the window is `crate::window`; `utils` only holds `log` |
+| `window/mod.rs` header | "`toggles` runs every frame" | runs only on the frame F10/F11 is pressed (run conditions) |
+| `window/mod.rs` `FULLSCREEN_MODE` | `config::FULLSCREEN` | `config::window::FULLSCREEN` |
+| `states/mod.rs` `GameState::Loading`, `states/loading/mod.rs` header | the world-generation design is in `docs/ARCHITECTURE.md` | it is in `docs/LOADING.md` |
+| `config/window.rs` `PRESENT_MODE` | "…actually supports. so they work…", with lines over 100 characters | fix the sentence, re-wrap |
+| `input/movement.rs` `MOVEMENT_KEYS` | "The keys a double-tap of any one of can engage sprint" | "Double-tapping any of these keys engages sprint" |
+| `Cargo.toml` release profile | "realeases" | "releases" |
+
+### 2.6 `CLAUDE.md` "What exists today" is missing `world/` and `render/`
+
+The parent `CLAUDE.md` (outside this repo) lists every current module except
+`world/` and `render/`. Its architecture section also still shows both only
+as future targets. It is the first thing a new contributor reads.
+
+**Recommendation:** add `world/` (chunk coordinates, storage, generation) and
+`render/` (chunk meshing, materials, the chunk mesh lifecycle) to that list.
 
 ---
 
 ## Tier 3 — Modularity
 
-All tier 3 items are resolved. Details are in `IMPROVEMENTS.md`.
+### 3.1 `fly` is at the ~50-line limit, with sprint logic inline
 
-### 3.1 `camera_world.rs` contained a player controller — **done**
+`input::movement::fly` is 46 lines of code. It reads movement intent, runs
+the sprint state machine for both `SprintMode`s, and applies motion. Only
+`is_double_tap` is unit-tested. The `Hold` branch has never been tested; it
+was checked once by temporarily flipping the constant. `CLAUDE.md`: "a system
+that grows past ~50 lines is a sign the logic inside it belongs in a plain
+function".
 
-Split: `camera/camera_world.rs` keeps the camera entity (marker, draw order,
-MSAA, start position, `LookAngles`, spawn/despawn), and the controls moved to
-a new `input/` folder — `look.rs`, `movement.rs`, `cursor.rs`. `input/`
-depends on `camera/`, never the reverse. A future `player/` module will own
-physics and block interaction; reading intent from the keys stays in
-`input/`.
+**Recommendation:** move the sprint update into a plain function, e.g.
+`update_sprint(keys: &ButtonInput<KeyCode>, mode: SprintMode, now: f32, state: &mut SprintState)`,
+with `last_tap` and `sprinting` grouped into one `SprintState` struct. Pass
+`mode` in as a parameter instead of reading `SPRINT_MODE` inside the
+function, so tests can cover **both** modes whatever the constant says.
+`fly` then passes `controls::SPRINT_MODE` in.
 
-### 3.2 `utils/window.rs` did two lifecycles — **done**
+### 3.3 `world/` finds the player through the camera — note only
 
-Now `window/` — a top-level module, not inside `utils/` — with `setup.rs`
-(runs once at startup) and `toggles.rs` (runs for the life of the game). The
-shared fullscreen mode sits in `window/mod.rs`, and re-exports kept every
-call site unchanged.
-
-A sweep for the same problem elsewhere found one more, fixed the same way:
-`states/mod.rs` held the state machine *and* the debug jump keys. The keys
-moved to `states/debug.rs`, compiled out of release as a whole module.
-
-The sweep also produced a second change — extracting `utils/engine.rs` for
-Bevy's own plugin configuration, on the theory that it was "adapting settings
-to the engine" like `window/` and `log.rs`. **This was tried and reverted.**
-Deciding which engine plugins run (audio on or off, gamepad on or off) is a
-composition decision — the same kind of decision as adding a domain plugin —
-not an adapter producing one value from config. It moved back into
-`AppPlugin::build`, inline, next to the domain plugin list it belongs beside.
-`window/` also moved out of `utils/` entirely once it was a two-file lifecycle
-split rather than a single small adapter — at that size it is a domain in its
-own right, a sibling of `camera/` and `input/`, not a utility. `utils/` is
-back to holding only `log.rs`. See `IMPROVEMENTS.md` for the full reasoning
-on both reversals.
-
-### 3.3 `input/` module — **done**
-
-Recreated as a real module for the player controls from 3.1.
+`load_chunks_around_player` queries `With<WorldCamera>`. That is correct
+today, because the camera *is* the player, and the dependency direction
+(`world/` → `camera/`) is legitimate. When `player/` arrives, switch to a
+player marker so `world/` doesn't depend on how the view is rendered.
+**No action now.**
 
 ---
 
 ## Tier 4 — Everything else
 
-### 4.1 Version control — **resolved**
+### 4.2 Test gaps
 
-Work is committed regularly now, so this is no longer tracked here.
+15 tests exist, all pure logic. Remaining gaps:
 
-### 4.2 Runtime verification — **partly done**
+- **Look pitch clamp.** The maths in `input::look::look` sits inside the
+  system. Pull out `apply_look(angles, delta) -> LookAngles` and test the
+  clamp at both limits. (Also suggested in audit #1 as item 4.4.)
+- **`Hold` sprint mode.** Covered by 3.1's extraction.
+- **Plugin wiring.** `CLAUDE.md` asks for "a thin integration test that
+  builds an `App` … and calls `App::update()`". None exist. A first one: an
+  `App` with `MinimalPlugins`, `StatesPlugin` and `GameStatePlugin`, updated
+  twice, asserting `GameState::Menu` (checks the `Loading → Menu` exit).
+  **Medium effort:** the state screens spawn UI and the world camera needs
+  rendering types, so what the headless `App` can include has to be worked
+  out. Worth doing once there is more wiring to protect.
 
-A 15-second run confirmed: clean startup with no panics, errors or warnings;
-the Vulkan loader noise is filtered; audio and gilrs are gone; and the path
-`Loading -> Menu -> InGame -> Playing` works, including the 3D scene spawning
-and the sub-state logging.
+### 4.4 Runtime checks still unconfirmed
 
-Still unconfirmed by eye: camera feel, mouse sensitivity (`0.002`), move speed
-(`12.0`), both window toggles, the translucent pause overlay, and whether the
-UI camera's non-clearing causes artefacts in `Menu`/`Loading`.
+Confirmed by you: the cursor lock and controls on first entering the game,
+the pause overlay appearing and clearing, double-tap sprint and Shift to
+descend, and F11 restoring the window size. Not yet confirmed by eye:
+changing `FOV_DEGREES`, `SprintMode::Hold` with Left Ctrl, the F10
+borderless toggle, and — new since `render/` — whether a chunk actually
+appears on screen as a solid green surface rather than nothing, whether the
+player now spawns above it instead of inside it, and whether every face
+renders right-side-out rather than inside-out (the winding in `render/mesh`
+was checked by hand with the cross-product for all six faces and by the
+vertex-count tests, but never seen rendered).
 
-### 4.3 `Loading` never advanced — **done**
+### 4.5 Release builds cannot log anywhere — carried over
 
-`states/loading` now has a `finish` system that moves to `Menu` once boot
-loading is done — today on the first frame, since there is nothing to load.
-Release builds no longer sit on the loading screen forever. The fuller
-loading design (world generation, soft loading) is in `LOADING.md`.
+Release builds detach the console (`windows_subsystem = "windows"`), and no
+file log exists, so a player's crash leaves no trace. Add a file layer via
+`LogPlugin::custom_layer` before anything is handed to other people.
 
-### 4.4 Almost no tests
+### 4.6 Temporary scaffolding still to delete — carried over
 
-One test exists (key-binding uniqueness). `cargo test` was measured at 11
-seconds warm, so tests are cheap to run here. Candidates that are pure logic
-and would not need Bevy: the pitch clamp, the movement direction composition,
-and the borderless/decorations inversion.
+- `states/debug.rs` (jump keys 1–3): once real menu transitions exist.
+- The placeholder screens in `loading/` and `menu/`: once the real UI exists.
 
-### 4.5 A stale comment in `Cargo.toml` — **done**
+`states/ingame/scene.rs` (six placeholder cubes and a light) is done — see
+`IMPROVEMENTS.md`, 2026-09-27. The light moved to `render/mod.rs`; the cubes
+are deleted, not replaced.
 
-The dev-profile comment claimed opt-level 1 while the setting was 0, and the
-Bevy comment referred to "everything you listed". Both rewritten, and the
-opt-level note from 1.3 folded in so the warning lives next to the setting it
-concerns.
+---
 
-### 4.6 The `[lints]` schema warning — **done, on the second attempt**
+## Checked and found nothing to do
 
-"Even Better TOML" flagged `[lints.rust] unsafe_code = "deny"` as invalid.
-Cargo disagrees: `cargo verify-project` succeeds and a deliberate `unsafe`
-block is rejected.
+Recorded so the next audit doesn't spend time re-checking these without
+reason:
 
-The first diagnosis was wrong. It assumed the extension had an outdated
-schema and added a `#:schema` directive pointing at schemastore — which did
-nothing, because the extension was already using that exact schema. Reading
-its cached copy showed the real cause: `cargo.json` defines `lints.rust` as a
-cross-file `$ref` to `cargo-lints-rust.json`, and that second file *does*
-list `unsafe_code` with `"deny"` as a valid level. So the TOML is valid under
-the schema; the extension (0.21.2) fails to evaluate across the reference.
+- **`unwrap`/`expect`:** none outside tests.
+- **`unsafe`:** none.
+- **Per-frame allocations:** none. The only allocations are one-off:
+  `format!` in the log setup, `to_string` for the window title, a mesh-handle
+  `clone` when spawning the scene, and the chunk `Vec` at generation.
+- **File and function size:** the largest file is 190 lines (`movement.rs`,
+  more than half of it tests). No function is over the limit except the
+  borderline `fly` (3.1).
+- **Pedantic and nursery lints (37 warnings):** none worth acting on.
+  - Redundant `pub(crate)` inside private modules: style only, and the
+    explicit form documents intent.
+  - `u32 → f32` and `f32 → i32` casts on `CHUNK_SIZE` and positions: exact
+    for these magnitudes, and Rust's float→int `as` saturates, so it cannot
+    be undefined.
+  - Strict float comparisons against exact zero input (`delta == ZERO`,
+    `intent == ZERO`): intentional; zero means "no input".
+  - "Passed by value": Bevy `Res`/`Query` system parameters, and the
+    `Copy` type `ChunkPos`.
+- **Duplicate dependencies (20):** all come from inside Bevy (`hashbrown`
+  ×3, `syn` 2 and 3, `windows-sys`, and font crates). None can be fixed from
+  here. Note: `syn 3` is already compiled because of `bytemuck_derive`, so
+  the `encase 0.12.1` pin does not save a `syn 3` compile. The pin is still
+  required for its real reason: the `syn` type mismatch across the
+  `bevy_encase_derive` proc-macro boundary.
+- **Security:** no network, no file I/O, no parsing of untrusted input. The
+  only external input is keyboard and mouse.
 
-No manifest edit can satisfy it while the table exists, and an editor-settings
-workaround would only fix one person's editor. The lint moved to
-`#![deny(unsafe_code)]` in `main.rs`, which is equivalent for a single crate
-and shows no error to anyone who clones the repo. The trade-off: integration
-tests, benches, and workspace members are separate crates that only `[lints]`
-covers, so it should move back when any of those appear. That note lives in
-`main.rs`, `Cargo.toml`, and `CLAUDE.md`.
+---
+
+## How to run this audit
+
+Repeat these steps each time, then replace this file:
+
+1. Read the standing decisions and reversals in `IMPROVEMENTS.md` first.
+2. `cargo fmt --check`, `cargo clippy -- -D warnings` and `cargo test` must
+   all be clean. Stop and fix first if not.
+3. `cargo clippy --all-targets -- -W clippy::pedantic -W clippy::nursery`.
+   Triage new warning *kinds* only; the dismissed kinds are listed above.
+4. `cargo tree -d -e normal --depth 0`: note new duplicates, and check
+   whether each one comes from us or from Bevy.
+5. Grep `src/` for `unwrap(`, `expect(`, `unsafe`, `#[allow`, `TODO`,
+   `format!`, `.clone()` and `collect` inside systems.
+6. Read every source file's `//!` header and the `pub` docs against what the
+   code now does. Stale docs have been the most common finding both times.
+7. Check that `README.md`, `ARCHITECTURE.md`'s module tree, and `CLAUDE.md`'s
+   "What exists today" match `find src -name '*.rs'`.
+8. Check each carried-over item's trigger (for example, "when meshing
+   exists") to see whether it has fired.
+9. Record decisions in `IMPROVEMENTS.md`, then rewrite this file.
