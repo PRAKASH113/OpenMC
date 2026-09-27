@@ -6,8 +6,6 @@
 //! comment there. This exists so storage, coordinates, and the load/generate
 //! cycle can be built and tested against *something* before terrain is real.
 
-use bevy::prelude::*;
-
 use super::block::Block;
 use super::chunk::{Chunk, ChunkPos};
 use crate::config::world as config;
@@ -25,22 +23,19 @@ pub(super) fn generate(pos: ChunkPos) -> Chunk {
 
     // Placeholder shape: solid in the bottom half, air above. Enough to
     // tell "generated" apart from "empty air" while there is no heightmap.
-    let size = config::CHUNK_SIZE;
-    let solid_height = size / 2;
-
-    for x in 0..size {
-        for z in 0..size {
-            for y in 0..solid_height {
-                chunk.set_block(UVec3::new(x, y, z), Block::Solid);
-            }
-        }
-    }
+    // One fill rather than a per-block loop: `Chunk`'s storage puts every
+    // block below a given height in one contiguous run (see
+    // `Chunk::fill_below_height`), which real heightmap-based generation
+    // will want just as much as this placeholder does.
+    chunk.fill_below_height(config::CHUNK_SIZE / 2, Block::Solid);
 
     chunk
 }
 
 #[cfg(test)]
 mod tests {
+    use bevy::prelude::*;
+
     use super::*;
 
     fn count_solid(chunk: &Chunk) -> usize {

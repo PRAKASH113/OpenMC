@@ -11,7 +11,26 @@ height moved above ground), and 4.3 (`Chunk::block` gained a real caller, so
 the dead-code question is moot) — and fixed one doc comment 2.5 flagged
 (`RENDER_DISTANCE`'s "3×3 ring" wording). All five are removed below rather
 than left marked done; see `IMPROVEMENTS.md`'s 2026-09-27 entry for what
-changed and why. Everything else here is unchanged from audit #2 and has not
+changed and why.
+
+**Updated again, same day.** Went through tier 1 one item at a time: 1.1 and
+1.2 done (removed below); 1.3's file re-added, staged, still awaiting a
+deliberate enable; 1.4, 1.5, and 1.6 explicitly deferred with reasons
+recorded, rather than left as generic carry-overs — see `IMPROVEMENTS.md`.
+
+**Updated a third time, same day.** 1.3 and 1.4 acted on: the Windows linker
+enabled, unused Bevy features dropped, `noise` added — made without a build
+to confirm any of it, at explicit request.
+
+**Updated a fourth time, same day.** That build happened: dropping `audio`
+broke `app::plugin`'s `.disable::<bevy::audio::AudioPlugin>()` line exactly
+as its own comment predicted (the type no longer exists once the feature is
+gone), surfaced by rust-analyzer and fixed. After that, `cargo check`,
+`clippy`, `build`, `test` (27 pass), and a boot run were all run clean —
+confirming the UI renders without `2d`, `noise` resolves and compiles, and
+`rust-lld.exe` actually links successfully, not merely gets found. Item 1.7
+(which existed to flag this exact verification as outstanding) is resolved
+and removed. Everything else here is unchanged from audit #2 and has not
 been re-checked against the current code.
 
 This file lists improvements that are identified but **not yet done**,
@@ -38,12 +57,8 @@ repeat this scan is at the bottom of the file.
 
 | ID | Tier | Finding | Effort | Recommendation |
 | --- | --- | --- | --- | --- |
-| 1.1 | Perf | Chunk storage order and generation loop order disagree | Small | Do before meshing |
-| 1.2 | Perf | Chunk loading runs every frame, even paused and standing still | Tiny | Do |
-| 1.3 | Build | No linker config; audit #1 said one was staged, but it never existed | Small | Ask first (rebuild) |
-| 1.4 | Build | Unused Bevy features still compiled | Small | Carry over: next dependency change |
-| 1.5 | Perf | `opt-level = 0` for our crate | Tiny | Carry over: measure once meshing exists |
-| 1.6 | Perf | Chunk generation runs synchronously on the main thread | Medium | Later: when `RENDER_DISTANCE > 0` |
+| 1.5 | Perf | `opt-level = 0` for our crate | Tiny | Reconfirmed: measure once greedy meshing exists |
+| 1.6 | Perf | Chunk generation runs synchronously; `mesh.rs` doesn't see across chunks | Medium | Deferred: alongside greedy meshing + async generation |
 | 2.1 | Read | README controls table and module tree are wrong | Tiny | Do |
 | 2.2 | Read | ARCHITECTURE "Startup configuration" describes deleted modules | Small | Do |
 | 2.4 | Read | `unsafe_code` lint declared twice; comment contradicts `Cargo.toml` | Tiny | Decide which one to keep |
@@ -60,93 +75,37 @@ repeat this scan is at the bottom of the file.
 
 ## Tier 1 — Performance
 
-### 1.1 Chunk storage order and generation loop order disagree
+### 1.5 `opt-level = 0` for our crate — reconfirmed
 
-`Chunk::index` stores blocks as `x + y*S + z*S²`, so **x** is the
-fastest-changing axis and **z** the slowest. `generation::generate` loops
-`x → z → y` with **y innermost**, so every write jumps 32 blocks forward
-instead of moving to the next byte. It also calls `set_block` once per
-block, and each call runs a three-way bounds `assert!` — 16,384 asserts at
-`opt-level = 0` for a shape that is really one contiguous fill.
+Standing decision, reconfirmed: stays `0`. Meshing exists now (`render/`),
+but as a straightforward face-culling pass over one small chunk at a time,
+not yet the kind of tight, hot numeric loop the original note meant.
+**Greedy meshing is the real trigger** — profile a chunk mesh at `0` and `1`
+once that lands, and decide from the numbers rather than guessing.
 
-At today's size (a 32 KB chunk, one chunk loaded) this costs nothing
-measurable. It matters because **meshing will be built on whatever order
-exists when it starts**, and changing the order later means rewriting both.
-
-**Recommendation:** decide the order now and write it down. Store blocks
-with **y slowest** (`x + z*S + y*S²`, "YZX", the layout Minecraft uses), so
-each horizontal layer is one contiguous run. Placing terrain by height —
-what generation does — then becomes range fills, and the placeholder floor
-becomes `blocks[..S*S*S/2].fill(Solid)`. Loops that walk blocks then go
-`y → z → x`. Keep `set_block` for single edits. Add a unit test that pins
-the index formula so it cannot drift silently.
-
-### 1.2 Chunk loading runs every frame, even paused and standing still
-
-`load_chunks_around_player` is gated on `GameState::InGame` only. It runs
-while paused, and on every frame the player hasn't moved, when the answer
-can't have changed. Each run is a query, a float→int conversion, and a
-`HashMap` lookup per chunk in range.
-
-**Recommendation:** add `Changed<Transform>` to its query. `CLAUDE.md`'s
-own rule is "use query filters to shrink iteration instead of filtering
-inside the system". Standing still, and all of `Paused`, then cost an empty
-query match.
-
-### 1.3 No linker configuration — and audit #1's claim was wrong
-
-Audit #1 item 1.2 said `.cargo/config.toml` "now exists" with commented
-`rust-lld` blocks. **It does not exist, and git has never tracked it**; it was
-probably written outside the repo folder. So nothing is staged.
-
-The finding itself still stands. On Windows every incremental build links a
-very large Bevy binary with MSVC's `link.exe`, the slowest step of each
-edit–compile cycle. Using `rust-lld` (shipped with the Rust toolchain) is
-low-risk and usually cuts seconds off every build.
-
-**Recommendation:** ask first. Changing the linker may invalidate the build
-cache and relink or rebuild everything once. Measure a warm incremental
-build before and after with `cargo build --timings` so the change is
-justified by numbers.
-
-### 1.4 Unused Bevy features are still compiled — carried over
-
-Still staged as three commented steps in `Cargo.toml` (drop `audio`; also
-drop `2d`; later, `3d` without glTF). Unchanged since audit #1: enabling any
-step recompiles all of Bevy, so it should ride along with the next
-dependency change. New since then: the dependency tree shows `bevy_gltf`
-and `bevy_animation` are compiled for a game that loads no models, which
-strengthens the case for step 3.
-
-### 1.5 `opt-level = 0` for our crate — carried over, closer to due
-
-Standing decision: stays `0` until measured. The trigger audit #1 named was
-"once chunk meshing and terrain generation exist". Generation now exists,
-but as a trivial placeholder run once per chunk, so it is not the tight
-loop the note meant. **Meshing is the real trigger.** When it lands, profile
-a chunk mesh at `0` and `1` and decide from the numbers.
-
-### 1.6 Chunk generation runs synchronously on the main thread
+### 1.6 Chunk generation runs synchronously on the main thread — deferred
 
 `generate` is called inside a system, so a chunk is built within the frame
-that needs it. That's fine at `RENDER_DISTANCE = 0`: one chunk, once. At
-radius 8 it is 289 chunks, and entering a new chunk row generates 17 in one
-frame, a visible hitch.
+that needs it. At `RENDER_DISTANCE = 2` that's up to 13 chunks, and moving
+across a chunk boundary can generate several in one frame — a hitch, though
+not yet a severe one at this size.
 
-**Recommendation: later, not now.** `generate` is already a pure function
-(no ECS access), so moving it onto `AsyncComputeTaskPool` needs no change to
-the function itself. [`LOADING.md`](LOADING.md) already plans initial world
-generation as `InGame`'s first sub-state. Do this when `RENDER_DISTANCE` is
-first raised above `0`.
+**Deliberately postponed**, alongside greedy meshing: multi-threaded
+chunk generation (`AsyncComputeTaskPool`) is planned as a follow-up to that
+work, not before it — `generate` is already a pure function, so moving it
+off the main thread needs no change to the function itself when the time
+comes.
 
-**Same trigger, a second item:** `render::mesh` never looks past its own
-chunk's data — a block at a chunk edge always gets its boundary face, even
-where a neighbouring chunk would actually hide it. Harmless today (there is
-only ever one loaded chunk, so there is no neighbour to hide it *from*), but
-it means real double-sided faces drawn at every chunk seam once
-`RENDER_DISTANCE > 0`. Fixing it needs `mesh.rs` to read the *other*
-chunk's edge blocks from `LoadedChunks`, which does not exist as a
-capability yet. Do alongside raising `RENDER_DISTANCE`, not before.
+**Same trigger, and now an active cost, not just a future one:**
+`render::mesh` never looks past its own chunk's data — a block at a chunk
+edge always gets its boundary face, even where a neighbouring chunk would
+actually hide it. This was harmless when only one chunk was ever loaded; at
+`RENDER_DISTANCE = 2`, with up to 13 chunks loaded and touching, it is now
+real extra geometry drawn at every chunk seam. Still deferred alongside the
+rest of this item — greedy meshing is expected to fold in cross-chunk
+awareness as part of the same rework, so fixing it twice would be wasted
+effort. Fixing it needs `mesh.rs` to read the *other* chunk's edge blocks
+from `LoadedChunks`, which does not exist as a capability yet.
 
 ---
 

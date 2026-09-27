@@ -28,22 +28,23 @@ impl Plugin for AppPlugin {
             DefaultPlugins
                 .set(primary_window_plugin())
                 .set(log_plugin())
-                // Engine plugins this game has no use for yet. Disabling at
-                // runtime costs no Bevy recompile, unlike dropping the Cargo
-                // feature, and both are leaf plugins — nothing else in Bevy
-                // depends on them, so removing them cannot break startup.
-                //
-                // Audio: there is no sound. Left enabled it opens an output
-                // device and keeps an audio thread running all session.
-                //
                 // Gilrs: the gamepad backend. There is no controller support,
                 // and left enabled it polls the OS for gamepad events every
-                // frame. Re-enable it when controller support is built.
+                // frame. Disabled at runtime rather than dropped from
+                // Cargo.toml's `bevy` features — unlike audio (below), Bevy
+                // doesn't gate it behind a feature at all, so a Cargo-level
+                // removal isn't available. Re-enable when controller support
+                // is built. It's a leaf plugin — nothing else in Bevy depends
+                // on it, so disabling it cannot break startup.
                 //
-                // Coupling: when the `audio` feature is later dropped in
-                // Cargo.toml, `AudioPlugin` stops existing and the line below
-                // stops compiling. Delete it at the same time.
-                .disable::<bevy::audio::AudioPlugin>()
+                // Audio used to be disabled here the same way. It no longer
+                // needs to be: the `audio` Cargo feature was dropped instead
+                // (see Cargo.toml), which removes `bevy_audio` from the
+                // dependency tree entirely rather than just skipping the
+                // plugin at runtime — the stronger version of the same
+                // decision. `bevy::audio::AudioPlugin` no longer exists to
+                // reference, which is exactly what broke this line when the
+                // feature was dropped without updating it in the same pass.
                 .disable::<bevy::gilrs::GilrsPlugin>(),
         );
 

@@ -22,7 +22,9 @@ Last reviewed in full: audit #2, 2026-09-26.
 | --- | --- |
 | `encase*` pinned to `0.12.1` in `Cargo.lock` | `0.12.2` moved to `syn 3` while `bevy_macro_utils` is on `syn 2`, and the mismatched `syn` types break the `bevy_encase_derive` proc macro. Do not `cargo update -p encase` past this until upstream fixes it. (`syn 3` itself is compiled anyway via `bytemuck_derive`; the pin is about the type mismatch, not build time.) |
 | `opt-level = 0` for our crate, `3` for dependencies | Our code compiles fast; Bevy is compiled once and cached. Raise ours only after **measuring** a real hot loop — meshing is the named trigger. |
-| Bevy feature trimming and a faster linker are staged, not enabled | Both force a full rebuild, so they ride along with the next dependency change, and only after asking. |
+| Windows uses `rust-lld.exe` as its linker (`.cargo/config.toml`); Linux/macOS blocks are left commented as reference, not enabled | Requested — this project only targets Windows right now. Confirmed present on this machine's toolchain by checking the filesystem before enabling it, not assumed. |
+| `bevy` uses `default-features = false, features = ["3d", "ui"]`, dropping `audio` and `2d` | No sound exists; the UI camera being `Camera2d` still works without the `2d` feature because `ui` already pulls in the Core2d render pass it needs — reasoned from the dependency graph (audit #2, "Step 2"), confirmed by a clean build and a boot run reaching `Menu`. Step 3 (dropping glTF) stays undone: it needs every `3d` sub-feature this project actually uses hand-listed correctly, which is worth doing with a build available to check the list is complete, not blind. |
+| `noise` added as a dependency ahead of any code using it | Added in the same pass as the Bevy feature trim specifically so both changes share one full rebuild instead of two. Default features only; no code reads it yet. |
 
 ### Layout
 
@@ -55,6 +57,8 @@ Last reviewed in full: audit #2, 2026-09-26.
 | Rare triggers are run conditions, not `if`s inside systems | The system is skipped outright when its trigger is absent — no query fetch, no body. Chain with `.and_then(..)`; `.and()` is deprecated. |
 | Per-frame systems exit on the common case before querying or doing maths | At `opt-level = 0`, inlined glam maths runs unoptimised in our crate. Skipping it beats speeding it up. |
 | `AudioPlugin` and `GilrsPlugin` are disabled at runtime | No sound and no controllers exist. Both are leaf plugins. Re-enable Gilrs for controller support; delete the Audio line when the `audio` feature is dropped. |
+| Systems that read a moving entity's `Transform` to decide whether to act (e.g. `load_chunks_around_player`) filter on `Changed<Transform>`, not just the entity's marker | If the entity hasn't moved, whatever depends on its position can't have changed either. Coarser than tracking the specific derived value (rotating in place also counts as "changed"), but it's the built-in query filter, reached for before a hand-rolled check. |
+| `Chunk` stores blocks with `y` slowest (`x + z*S + y*S²`, "YZX", the layout Minecraft uses), never a different axis order without updating `Chunk::index`'s pinning test | Terrain is naturally described by height, so a layout where every block sharing a height is contiguous turns "fill everything below this height" into one slice fill (`Chunk::fill_below_height`) instead of a per-block loop. Whichever axis order is picked, generation and meshing must agree with it — that was the original bug this fixed. |
 
 ### States
 
@@ -873,6 +877,127 @@ release, `ChunkLock` still always defaults to `false` — a separate `cfg`'d
 constant, not a runtime check of the debug-only ones, since those don't
 exist to check in a release compile. *Perf: none, a startup value. Modularity:
 none, a one-line addition to the pattern the previous entry already set.*
+
+**Audit #2's tier 1, worked through one item at a time.** 1.1 and 1.2 done;
+1.3's file restored (staged, not enabled); 1.4, 1.5, and 1.6 explicitly
+deferred rather than left as generic "carry over" — see `AUDIT.md` for the
+current text of each. Recorded here is what changed in code for 1.1 and 1.2.
+
+**1.1 — chunk storage and generation now agree on block order.**
+`Chunk::index` stored blocks with `z` slowest; `generation::generate` looped
+with `y` innermost — every write during generation jumped 32 slots ahead
+instead of landing on the next one, and did it once per block through a
+bounds-checked `set_block`. Changed the formula to `x + z*S + y*S²` ("YZX",
+the layout Minecraft uses): now every block sharing a height is contiguous
+in memory, since terrain is naturally described that way ("solid up to this
+height"). `generation::generate` dropped its triple-nested loop entirely in
+favour of a new `Chunk::fill_below_height`, which fills the whole placeholder
+floor as one slice fill. `set_block` lost its only real caller in the
+process — kept for future per-block edits (block placing/breaking, a
+non-flat heightmap), `#[allow(dead_code)]` rather than `#[expect]` because
+it's already called from this file's own tests and `render::mesh`'s: the
+lint fires in a plain `cargo clippy` but not in `cargo test`, where those
+callers exist, and `#[expect]` demands the lint fire in *every* build it's
+compiled into — it doesn't, and using it produced exactly the "unfulfilled
+expectation" warning that predicts, caught and reverted to `#[allow]` in the
+same pass. A new test pins `x`-fastest/`z`-next/`y`-slowest directly, so a
+future change to the formula fails a test immediately rather than silently
+degrading whatever reads the layout next.
+
+**1.2 — chunk loading now costs nothing when the player hasn't moved.**
+`load_chunks_around_player` ran every frame `GameState::InGame` was active,
+including all of `Paused` and every frame spent standing still, doing a
+query, a float-to-chunk-coordinate conversion, and a `HashMap` lookup per
+candidate chunk regardless of whether anything could have changed. Added
+`Changed<Transform>` to the query. While `Paused`, `look`/`fly` (the only
+systems that ever write to the camera's `Transform`) are already gated to
+`Playing`, so the `Transform` genuinely never changes there — the query
+comes back empty and the system does nothing. Standing still gets the same
+treatment. Looking around without moving still triggers a re-check (`Changed`
+tracks the whole component, not just translation), which is a coarser
+saving than a hand-rolled "did the chunk actually change" comparison would
+give, but it's the built-in query filter `CLAUDE.md` names first, applied
+exactly as the audit recommended.
+
+*Perf: 1.1 turns a 16,384-iteration bounds-checked loop into one slice fill
+per chunk generated — negligible at today's scale (one chunk, once) but the
+kind of thing that compounds once generation runs constantly during
+streaming. 1.2 skips the entire system, not just its body, on any frame the
+camera didn't move — previously guaranteed cost every frame while `InGame`,
+now zero on the common "standing still" and "paused" frames. Correctness:
+`cargo check`, `cargo clippy -- -D warnings`, and `cargo test` (27 pass, 3
+new — the index-formula pin, `fill_below_height`'s exact range, and its
+out-of-range panic) all clean from a fresh `cargo clean -p openmc_b`, plus a
+boot run confirming no panic on startup.*
+
+**1.3 and 1.4 acted on — Windows linker enabled, Bevy features trimmed,
+`noise` added.** All three requested explicitly, and made **without
+building to confirm any of them** — also requested explicitly.
+
+`.cargo/config.toml`: uncommented the Windows block, so `rust-lld.exe` is
+now the active linker for this project rather than MSVC's default. Verified
+`rust-lld.exe` actually exists on this machine's toolchain by checking the
+filesystem (`<toolchain>/lib/rustlib/x86_64-pc-windows-msvc/bin/`) before
+enabling it, so it will at least be *found* — whether linking with it
+succeeds is the thing a build would confirm. Linux and macOS blocks stay
+commented, as reference, not because they're wrong, but because this
+project only targets Windows right now and enabling them would be enabling
+something nobody can test.
+
+`Cargo.toml`: `bevy`'s feature list changed from the implicit default
+(`["2d", "3d", "ui", "audio"]`) to an explicit `default-features = false,
+features = ["3d", "ui"]` — audit #2's Step 1 (drop `audio`) and Step 2 (drop
+`2d`) together, both already fully staged and reasoned through the
+dependency graph in that audit entry. Step 3 (dropping glTF, since this game
+loads no models) was deliberately *not* applied: it requires hand-listing
+every `3d` sub-feature this project actually needs (`bevy_pbr`,
+`bevy_core_pipeline`, `bevy_render`, `bevy_anti_alias`, ...), and getting
+that list right on the first try with no build available to catch a missing
+one is a real way to hand someone a broken build. Also added `noise = "0.9"`
+— checked directly against the crates.io index rather than guessed, since
+that's the current, non-yanked latest — ahead of any code reading it, in the
+same pass as the feature trim specifically so one rebuild covers both
+changes instead of two separate ones later.
+
+**This is the one entry in this log where "verified" is not part of the
+perf/correctness note**, because none of the usual checks were run:
+
+*Perf: expected to shrink the compiled binary and, if `rust-lld` genuinely
+helps here, shorten every subsequent incremental build — neither measured.
+Modularity: none, dependency configuration only. Correctness:
+**unconfirmed.** `cargo check`/`clippy`/`test`/`build` were not run for this
+change, at explicit request — three things need a real build to know for
+certain: that the UI still renders correctly without the `2d` feature, that
+`noise` resolves and compiles cleanly against this dependency set, and that
+linking with `rust-lld.exe` actually succeeds rather than merely being
+found on disk. `docs/AUDIT.md` 1.7 exists specifically to make sure that
+build happens, and happens before anything else changes, so if something
+breaks it's isolated to these three edits.*
+
+**That build happened, and it found exactly one break.** Dropping the
+`audio` feature removed `bevy::audio::AudioPlugin` from existence, and
+`app::plugin::AppPlugin` still had `.disable::<bevy::audio::AudioPlugin>()`
+in its `DefaultPlugins` chain — the same line whose own comment predicted
+this exact failure ahead of time ("when the `audio` feature is later
+dropped ... `AudioPlugin` stops existing and the line below stops
+compiling. Delete it at the same time"). It wasn't deleted in the same pass
+because that pass was explicitly code-only, no build, so nothing surfaced it
+until rust-analyzer did. Fixed: the line is gone, and the surrounding
+comment now explains that audio is disabled the *stronger* way — a Cargo
+feature removed, so `bevy_audio` isn't even in the dependency tree — rather
+than the runtime-disable Gilrs still uses (which stays, since Bevy doesn't
+gate the gamepad backend behind a feature at all).
+
+With that fixed, the deferred verification ran: `cargo check` (fresh, ~3
+minutes — the full rebuild every dependency-graph or linker change causes,
+exactly as flagged), `cargo fmt`, `cargo clippy -- -D warnings`, `cargo
+build` (confirmed `target/debug/openmc_b.exe` freshly linked — the actual
+test of `rust-lld.exe`, since `check`/`clippy` don't invoke the linker for a
+binary crate), `cargo test` (27 pass, unchanged), and a boot run reaching
+`Menu` with no panics or render errors, confirming the UI still draws
+without the `2d` feature. All clean. `docs/AUDIT.md` 1.7 is resolved and
+removed — the three 2026-09-27 dependency/build changes are now confirmed
+working, not just applied.
 
 ---
 

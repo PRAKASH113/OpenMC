@@ -1,0 +1,42 @@
+# Faster linking for local development.
+# See docs/AUDIT.md and docs/IMPROVEMENTS.md, item 1.3, for the full write-up.
+#
+# What this is: every build has two stages — compiling (turning .rs files
+# into object code) and linking (gluing your code, every dependency, and
+# Bevy itself into one .exe). Linking happens on every single build, even a
+# one-line change, so it's pure overhead in the edit-compile-run loop, with
+# zero effect on how the finished game runs. `rust-lld` is an alternative
+# linker bundled with the Rust toolchain (no separate install) that is
+# typically faster at this step than the platform default.
+#
+# Enabled for Windows only below — confirmed present on this machine at
+# <toolchain>/lib/rustlib/x86_64-pc-windows-msvc/bin/rust-lld.exe, so no
+# extra install needed here. Linux and macOS are left commented as reference
+# for later, since this project only targets Windows right now; their setup
+# needs its own linker/toolchain (`clang` + `lld` on Linux, LLVM via Homebrew
+# on macOS) and hasn't been verified on either.
+#
+# This was enabled without a build to confirm it (see
+# docs/IMPROVEMENTS.md, 2026-09-27) — changing the linker invalidates
+# Cargo's build fingerprint, so the *next* build from here recompiles every
+# dependency, including Bevy, from scratch, once. That's expected, not a
+# sign anything is wrong. To confirm it actually helped afterwards, compare
+# `cargo build --timings` reports (they land in target/cargo-timings/) from
+# before and after — rename the report between runs so it isn't overwritten.
+
+# ── Windows (MSVC) — enabled ─────────────────────────────────────────────
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+
+# ── Linux — reference only, not enabled ──────────────────────────────────
+# [target.x86_64-unknown-linux-gnu]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+# ── macOS (Intel) — reference only, not enabled ──────────────────────────
+# [target.x86_64-apple-darwin]
+# rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+# ── macOS (Apple Silicon) — reference only, not enabled ──────────────────
+# [target.aarch64-apple-darwin]
+# rustflags = ["-C", "link-arg=-fuse-ld=lld"]

@@ -152,11 +152,21 @@ fn in_render_distance(pos: ChunkPos, center: ChunkPos, radius: u32) -> bool {
 /// Eviction runs before loading, so at the render-distance boundary the
 /// chunk map is never briefly holding both an old and a new chunk in the
 /// same slot.
+///
+/// `Changed<Transform>` on the query, not just `With<WorldCamera>`: if the
+/// camera hasn't moved, its chunk can't have changed, so there's nothing to
+/// load or evict. This is what makes the system free while `Paused` — the
+/// only systems that ever write to the camera's `Transform` are gated on
+/// `Playing`, so it genuinely never changes while paused — and free while
+/// standing still. It doesn't distinguish moving from just looking around,
+/// since both touch the same `Transform`; that's a coarser saving than a
+/// hand-rolled "did the chunk actually change" check would give, but it's
+/// the query filter `CLAUDE.md` asks for reached for first.
 fn load_chunks_around_player(
     mut world: ResMut<LoadedChunks>,
     mut loaded: MessageWriter<ChunkLoaded>,
     mut unloaded: MessageWriter<ChunkUnloaded>,
-    player: Query<&Transform, With<WorldCamera>>,
+    player: Query<&Transform, (With<WorldCamera>, Changed<Transform>)>,
 ) {
     let Ok(transform) = player.single() else {
         return;

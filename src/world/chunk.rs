@@ -58,7 +58,14 @@ impl ChunkPos {
 /// One cube of blocks, [`config::CHUNK_SIZE`] to a side.
 ///
 /// Blocks are stored flat and indexed by [`Self::index`] rather than nested
-/// per-axis `Vec`s, so the whole chunk is one contiguous allocation.
+/// per-axis `Vec`s, so the whole chunk is one contiguous allocation. Within
+/// that flat layout, `x` varies fastest and `y` slowest ("YZX" — the layout
+/// Minecraft uses), so every block sharing a height sits in one contiguous
+/// run. That matters because terrain is naturally described by height (a
+/// heightmap says "solid up to here"), so this layout turns "fill everything
+/// below this height" into one contiguous slice fill (see
+/// [`Self::fill_below_height`]) instead of visiting every block one at a
+/// time in an order that scatters across memory.
 pub(crate) struct Chunk {
     blocks: Vec<Block>,
 }
@@ -84,23 +91,56 @@ impl Chunk {
 
     /// Sets the block at a *local* position within this chunk (each axis in
     /// `0..CHUNK_SIZE`).
+    ///
+    /// `generate` no longer calls this directly — it fills the whole
+    /// placeholder floor in one shot via [`Self::fill_below_height`] — so it
+    /// has no real (non-test) caller right now. `#[allow]`, not `#[expect]`:
+    /// this is already called from `#[cfg(test)]` code (this file's own
+    /// tests, and `render::mesh`'s), so the lint fires in a plain `cargo
+    /// clippy`/`cargo check` but not in `cargo test`, where those callers
+    /// exist. `#[expect]` demands the lint fire in *every* build it's
+    /// compiled into, so it would (and did) warn "unfulfilled" the moment
+    /// `cargo test` compiled this — the opposite of what `#[expect]` is for.
+    #[allow(dead_code)]
     pub(crate) fn set_block(&mut self, local: UVec3, block: Block) {
         let index = Self::index(local);
         self.blocks[index] = block;
     }
 
+    /// Sets every block with `y < height` (every `x` and `z`) to `block`, in
+    /// one pass.
+    ///
+    /// Relies directly on [`Self::index`]'s layout: with `y` the slowest
+    /// axis, every block below a given height occupies one contiguous run
+    /// at the front of [`Self::blocks`], so this is a single slice fill
+    /// rather than `height * CHUNK_SIZE * CHUNK_SIZE` individual
+    /// bounds-checked writes through [`Self::set_block`]. If that layout
+    /// ever changes, this method has to change with it — it is the one
+    /// place outside [`Self::index`] itself that assumes it.
+    pub(crate) fn fill_below_height(&mut self, height: u32, block: Block) {
+        let size = config::CHUNK_SIZE;
+        assert!(
+            height <= size,
+            "fill height {height} exceeds chunk size {size}"
+        );
+        let count = (height * size * size) as usize;
+        self.blocks[..count].fill(block);
+    }
+
     /// Flattens a local `(x, y, z)` into an index into [`Self::blocks`].
     ///
-    /// Panics if any axis is outside `0..CHUNK_SIZE`, deliberately: an
-    /// out-of-range coordinate here is a bug in the caller (generation or,
-    /// later, meshing), not a valid "empty" query to answer quietly.
+    /// `x` varies fastest, `z` next, `y` slowest — see the type-level doc
+    /// comment for why. Panics if any axis is outside `0..CHUNK_SIZE`,
+    /// deliberately: an out-of-range coordinate here is a bug in the caller
+    /// (generation or, later, meshing), not a valid "empty" query to answer
+    /// quietly.
     fn index(local: UVec3) -> usize {
         let size = config::CHUNK_SIZE;
         assert!(
             local.x < size && local.y < size && local.z < size,
             "chunk-local position {local:?} is outside a {size}^3 chunk"
         );
-        (local.x + local.y * size + local.z * size * size) as usize
+        (local.x + local.z * size + local.y * size * size) as usize
     }
 }
 
@@ -150,5 +190,40 @@ mod tests {
     #[should_panic(expected = "outside a")]
     fn an_out_of_range_index_panics() {
         Chunk::index(UVec3::new(config::CHUNK_SIZE, 0, 0));
+    }
+
+    /// Pins the index formula's axis order down directly: `x` fastest, `z`
+    /// next, `y` slowest. `fill_below_height` depends on this exact order —
+    /// if it ever changes, this test should be the first thing to fail,
+    /// not a silent slowdown discovered later.
+    #[test]
+    fn x_is_fastest_z_is_next_y_is_slowest() {
+        let size = config::CHUNK_SIZE;
+        assert_eq!(Chunk::index(UVec3::new(0, 0, 0)), 0);
+        assert_eq!(Chunk::index(UVec3::new(1, 0, 0)), 1);
+        assert_eq!(Chunk::index(UVec3::new(0, 0, 1)), size as usize);
+        assert_eq!(Chunk::index(UVec3::new(0, 1, 0)), (size * size) as usize);
+    }
+
+    #[test]
+    fn fill_below_height_fills_exactly_that_many_layers() {
+        let size = config::CHUNK_SIZE;
+        let mut chunk = Chunk::empty();
+        chunk.fill_below_height(size / 2, Block::Solid);
+
+        // Every block strictly below the height is solid...
+        assert_eq!(chunk.block(UVec3::new(0, 0, 0)), Block::Solid);
+        assert_eq!(
+            chunk.block(UVec3::new(size - 1, size / 2 - 1, size - 1)),
+            Block::Solid
+        );
+        // ...and everything at or above it is untouched.
+        assert_eq!(chunk.block(UVec3::new(0, size / 2, 0)), Block::Air);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds chunk size")]
+    fn fill_below_height_rejects_a_height_past_the_chunk() {
+        Chunk::empty().fill_below_height(config::CHUNK_SIZE + 1, Block::Solid);
     }
 }
