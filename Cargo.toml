@@ -50,14 +50,20 @@ bevy = { version = "0.19", default-features = false, features = [
 #    complete — left alone for exactly that reason. Worth doing once build
 #    time actually hurts, with a build available to verify it.
 
-# ── noise: procedural noise for terrain generation ────────────────────────
-#    Not used by any code yet — `world::generation` is still the flat
-#    placeholder floor — added ahead of that landing, since adding it here
-#    already forces the one-time Bevy rebuild Step 1/2 above also needs, so
-#    both are paid for in the same rebuild rather than two separate ones.
+# ── noise: procedural noise, used by `world::generation` for terrain. ─────
 #    Default features only (no `images`; nothing here needs to dump noise to
 #    a PNG).
 noise = "0.9"
+
+# ── binary-greedy-meshing: the chunk mesher. ──────────────────────────────
+#    A Rust port of https://github.com/cgerikj/binary-greedy-meshing (the
+#    reference this project's own mesher is built against — see
+#    `render::mesh`), by a different author, used as a real dependency
+#    rather than a hand-port of the C++: it's MIT-licensed, generic over
+#    chunk size (so it works with our `CHUNK_SIZE`, not just its own demo's
+#    62), and already used in a real Bevy voxel game. `no_std` — pulls in no
+#    extra dependencies of its own beyond `alloc`.
+binary-greedy-meshing = "0.5.2"
 
 # ── Dev-only build speedup, not enabled here ─────────────────────────────
 #    `bevy/dynamic_linking` links Bevy as a shared library so it is not

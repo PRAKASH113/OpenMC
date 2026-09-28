@@ -6,6 +6,8 @@
 //! unload. Depends on `world/`, never the reverse — the same direction
 //! `input/` depends on `camera/`.
 
+#[cfg(debug_assertions)]
+mod debug;
 mod material;
 mod mesh;
 
@@ -48,6 +50,9 @@ impl Plugin for RenderPlugin {
                 OnExit(GameState::InGame),
                 (despawn_world_light, despawn_all_chunk_meshes),
             );
+
+        #[cfg(debug_assertions)]
+        debug::register(app);
     }
 }
 
@@ -71,7 +76,14 @@ fn despawn_world_light(mut commands: Commands, lights: Query<Entity, With<WorldL
     }
 }
 
-/// Builds and spawns a mesh entity for every chunk that just loaded.
+/// Builds and spawns a mesh entity for every chunk that just loaded, and
+/// re-meshes any of its already-spawned neighbours.
+///
+/// The re-mesh matters because of how `mesh::chunk_mesh` hides faces at a
+/// chunk seam: it only knows about a neighbour that's loaded *at the moment
+/// it runs*. A neighbour spawned earlier, before this chunk existed, was
+/// meshed as if this side were open air — its mesh is now stale the instant
+/// this chunk appears, and nothing else would ever tell it to update.
 fn spawn_chunk_meshes(
     mut commands: Commands,
     mut loaded: MessageReader<ChunkLoaded>,
@@ -79,6 +91,7 @@ fn spawn_chunk_meshes(
     material: Res<ChunkMaterial>,
     world: Res<LoadedChunks>,
     mut entities: ResMut<ChunkEntities>,
+    mut mesh_handles: Query<&mut Mesh3d>,
 ) {
     for ChunkLoaded { pos } in loaded.read() {
         let Some(chunk) = world.chunk(*pos) else {
@@ -88,7 +101,7 @@ fn spawn_chunk_meshes(
             continue;
         };
 
-        let mesh = meshes.add(chunk_mesh(chunk));
+        let mesh = meshes.add(chunk_mesh(*pos, chunk, &world));
         let entity = commands
             .spawn((
                 Mesh3d(mesh),
@@ -98,6 +111,21 @@ fn spawn_chunk_meshes(
             ))
             .id();
         entities.0.insert(*pos, entity);
+
+        for neighbor_pos in pos.face_neighbors() {
+            let (Some(&neighbor_entity), Some(neighbor_chunk)) =
+                (entities.0.get(&neighbor_pos), world.chunk(neighbor_pos))
+            else {
+                // Not spawned yet, or not loaded: nothing to refresh. A
+                // neighbour that loads later will pick this chunk up itself,
+                // the same way this one just did.
+                continue;
+            };
+            let Ok(mut mesh3d) = mesh_handles.get_mut(neighbor_entity) else {
+                continue;
+            };
+            mesh3d.0 = meshes.add(chunk_mesh(neighbor_pos, neighbor_chunk, &world));
+        }
     }
 }
 

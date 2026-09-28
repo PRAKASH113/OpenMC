@@ -115,6 +115,38 @@ pub const DEBUG_GOTO_INGAME: KeyCode = KeyCode::Digit3;
 #[cfg(debug_assertions)]
 pub const TOGGLE_CHUNK_LOCK: KeyCode = KeyCode::F9;
 
+/// Toggle wireframe rendering on every chunk mesh, to check the greedy
+/// mesher is actually producing the quads it should. Testing only — inert
+/// unless [`crate::config::debug::TESTING_TOOLS_ENABLED`] is `true`. See
+/// `render::debug`.
+#[cfg(debug_assertions)]
+pub const TOGGLE_WIREFRAME: KeyCode = KeyCode::F8;
+
+/// Cycle the chunk-bounds grid drawn around whichever chunk the camera is
+/// currently in: none, an outline, or an outline with axis lines through
+/// its centre. Testing only — inert unless
+/// [`crate::config::debug::TESTING_TOOLS_ENABLED`] is `true`. See
+/// `render::debug`.
+#[cfg(debug_assertions)]
+pub const TOGGLE_CHUNK_GRID: KeyCode = KeyCode::F7;
+
+/// Held alongside [`TOGGLE_CHUNK_GRID`] to lock the grid to its current
+/// chunk instead of cycling its display mode — it then stops following the
+/// camera, the same way [`TOGGLE_CHUNK_LOCK`] freezes chunk loading. A
+/// dedicated modifier rather than reusing [`SPRINT_HOLD_KEY`] (Left
+/// Control): this is an unrelated debug gesture, not a second meaning for a
+/// gameplay key. Testing only, same as the key it modifies.
+#[cfg(debug_assertions)]
+pub const DEBUG_MODIFIER: KeyCode = KeyCode::AltLeft;
+
+/// Toggle the sea-level marker: two lines at absolute world height `0`
+/// crossing under the camera, showing where `CHUNKS_BELOW_SEA_LEVEL` starts.
+/// Testing only — inert unless
+/// [`crate::config::debug::TESTING_TOOLS_ENABLED`] is `true`. See
+/// `render::debug`.
+#[cfg(debug_assertions)]
+pub const TOGGLE_SEA_LEVEL_LINE: KeyCode = KeyCode::F6;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,6 +180,10 @@ mod tests {
             ("DEBUG_GOTO_MENU", DEBUG_GOTO_MENU),
             ("DEBUG_GOTO_INGAME", DEBUG_GOTO_INGAME),
             ("TOGGLE_CHUNK_LOCK", TOGGLE_CHUNK_LOCK),
+            ("TOGGLE_WIREFRAME", TOGGLE_WIREFRAME),
+            ("TOGGLE_CHUNK_GRID", TOGGLE_CHUNK_GRID),
+            ("DEBUG_MODIFIER", DEBUG_MODIFIER),
+            ("TOGGLE_SEA_LEVEL_LINE", TOGGLE_SEA_LEVEL_LINE),
         ]);
 
         all

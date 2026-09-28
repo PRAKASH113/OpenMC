@@ -7,12 +7,22 @@
 //! and this module has no idea `render/` exists.
 //!
 //! Chunks load and unload as the player moves, within
-//! [`config::RENDER_DISTANCE`] chunks of their current chunk — a *circle*
-//! (by squared distance), not the bounding square, so the far corners of
-//! that square aren't loaded just because they happen to fall inside it. See
-//! [`in_render_distance`].
+//! [`config::RENDER_DISTANCE`] chunk *columns* of their current column — a
+//! *circle* (by squared distance), not the bounding square, so the far
+//! corners of that square aren't loaded just because they happen to fall
+//! inside it. Every column within range loads its *entire* height —
+//! [`config::CHUNKS_ABOVE_SEA_LEVEL`] chunks above sea level down to
+//! [`config::CHUNKS_BELOW_SEA_LEVEL`] below it — regardless of which layer
+//! the player is actually standing on. See [`in_render_distance`] and
+//! [`in_vertical_range`].
 //!
-//! `debug` (debug builds only) can freeze that entirely for testing — see
+//! Generation runs on a background thread, not the frame that requests it:
+//! [`load_chunks_around_player`] only decides what's needed and spawns a
+//! task for each newly-wanted chunk; [`apply_generated_chunks`] picks up
+//! whichever tasks have finished, on any frame, and is what actually inserts
+//! them into [`LoadedChunks`] and fires [`ChunkLoaded`]. See [`PendingChunks`].
+//!
+//! `debug` (debug builds only) can freeze loading entirely for testing — see
 //! [`ChunkLock`].
 
 mod block;
@@ -24,6 +34,7 @@ mod generation;
 use std::collections::HashMap;
 
 use bevy::prelude::*;
+use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 
 pub(crate) use block::Block;
 pub(crate) use chunk::{Chunk, ChunkPos};
@@ -63,6 +74,17 @@ impl LoadedChunks {
     pub(crate) fn chunk(&self, pos: ChunkPos) -> Option<&Chunk> {
         self.chunks.get(&pos)
     }
+
+    /// Records `chunk` as loaded at `pos`, replacing whatever was there.
+    ///
+    /// The write counterpart to [`Self::chunk`] — kept `pub(crate)`, not
+    /// just used internally by [`load_chunks_around_player`], so `render/`'s
+    /// mesher tests can build a small `LoadedChunks` by hand (a couple of
+    /// chunks with known neighbours) without going through generation or the
+    /// ECS at all.
+    pub(crate) fn insert(&mut self, pos: ChunkPos, chunk: Chunk) {
+        self.chunks.insert(pos, chunk);
+    }
 }
 
 /// Whether chunk loading and unloading is frozen.
@@ -96,19 +118,41 @@ const INITIALLY_LOCKED: bool = crate::config::debug::TESTING_TOOLS_ENABLED
 #[cfg(not(debug_assertions))]
 const INITIALLY_LOCKED: bool = false;
 
+/// Chunks currently being generated on a background thread, keyed by
+/// position so the same chunk is never queued twice while one attempt is
+/// still in flight.
+///
+/// `generate` is a pure function with no ECS access (see `generation.rs`),
+/// so running it inside [`AsyncComputeTaskPool`] needs nothing from it but
+/// the `ChunkPos` — no world access to hand across the thread boundary, no
+/// synchronisation to get right.
+#[derive(Resource, Default)]
+struct PendingChunks(HashMap<ChunkPos, Task<Chunk>>);
+
 /// Owns chunk storage and generation.
 pub struct WorldPlugin;
 
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LoadedChunks>()
+            .init_resource::<PendingChunks>()
             .init_resource::<ChunkLock>()
             .add_message::<ChunkLoaded>()
             .add_message::<ChunkUnloaded>()
             .add_systems(
                 Update,
-                load_chunks_around_player
-                    .run_if(in_state(GameState::InGame).and_then(chunk_loading_unlocked)),
+                (
+                    load_chunks_around_player
+                        .run_if(in_state(GameState::InGame).and_then(chunk_loading_unlocked)),
+                    // Not gated on `chunk_loading_unlocked`: the lock stops
+                    // *new* generation from being requested, but work already
+                    // in flight should still land when it finishes rather
+                    // than being stuck in limbo. Not gated on
+                    // `Changed<Transform>` either (unlike the system above) —
+                    // a background task can finish on a frame the player
+                    // didn't move.
+                    apply_generated_chunks.run_if(in_state(GameState::InGame)),
+                ),
             )
             .add_systems(OnExit(GameState::InGame), clear_loaded_chunks);
 
@@ -122,11 +166,11 @@ fn chunk_loading_unlocked(lock: Res<ChunkLock>) -> bool {
     !lock.0
 }
 
-/// Whether `pos` is within [`config::RENDER_DISTANCE`] chunks of `center`,
-/// horizontally, and on the same vertical layer — the vertical axis is a
-/// separate, not-yet-wired concept (`config::world`'s sea-level constants),
-/// so a chunk one layer above or below the player is never in range no
-/// matter the radius.
+/// Whether `pos` is within `radius` chunks of `center`, horizontally, and
+/// inside the world's fixed vertical extent (`above`/`below`, see
+/// [`in_vertical_range`]) — *not* relative to `center`'s own height. The
+/// player's column loads its whole height regardless of which layer they're
+/// standing on; only the horizontal distance is measured from them.
 ///
 /// A circle (squared distance), not the bounding square: the square's
 /// corners are up to `radius * sqrt(2)` chunks away, about 27% more chunks
@@ -134,8 +178,14 @@ fn chunk_loading_unlocked(lock: Res<ChunkLock>) -> bool {
 /// out at an inconsistent distance depending on which direction the player
 /// is moving. Squared rather than an actual `sqrt` so this stays cheap
 /// across however many candidate chunks it's checked against.
-fn in_render_distance(pos: ChunkPos, center: ChunkPos, radius: u32) -> bool {
-    if pos.y != center.y {
+fn in_render_distance(
+    pos: ChunkPos,
+    center: ChunkPos,
+    radius: u32,
+    above: u32,
+    below: u32,
+) -> bool {
+    if !in_vertical_range(pos.y, above, below) {
         return false;
     }
 
@@ -145,13 +195,26 @@ fn in_render_distance(pos: ChunkPos, center: ChunkPos, radius: u32) -> bool {
     dx * dx + dz * dz <= radius * radius
 }
 
-/// Generates every not-yet-loaded chunk within render distance of the
-/// player's current chunk, and drops every loaded chunk that has fallen
-/// outside it.
+/// Whether chunk-vertical-coordinate `y` falls within the world's fixed
+/// vertical extent: chunk `0` (which starts exactly at sea level) up to
+/// `above - 1`, and chunk `-1` down to `-(below as i32)`.
 ///
-/// Eviction runs before loading, so at the render-distance boundary the
-/// chunk map is never briefly holding both an old and a new chunk in the
-/// same slot.
+/// A fixed extent, not a radius around the player — unlike the horizontal
+/// circle above, this never changes as the player moves up or down. That's
+/// the whole point of `CHUNKS_ABOVE_SEA_LEVEL`/`_BELOW_SEA_LEVEL` describing
+/// a world height rather than a render distance.
+fn in_vertical_range(y: i32, above: u32, below: u32) -> bool {
+    (-(below as i32)..(above as i32)).contains(&y)
+}
+
+/// Queues generation for every not-yet-loaded, not-already-queued chunk
+/// within render distance of the player's current chunk, and drops every
+/// loaded or in-flight chunk that has fallen outside it.
+///
+/// Eviction runs before queuing, so at the render-distance boundary neither
+/// map is ever briefly holding both an old and a new chunk in the same slot.
+/// Dropping a still-running [`Task`] cancels it — there's no point letting a
+/// chunk finish generating for a position the player has already left.
 ///
 /// `Changed<Transform>` on the query, not just `With<WorldCamera>`: if the
 /// camera hasn't moved, its chunk can't have changed, so there's nothing to
@@ -164,7 +227,7 @@ fn in_render_distance(pos: ChunkPos, center: ChunkPos, radius: u32) -> bool {
 /// the query filter `CLAUDE.md` asks for reached for first.
 fn load_chunks_around_player(
     mut world: ResMut<LoadedChunks>,
-    mut loaded: MessageWriter<ChunkLoaded>,
+    mut pending: ResMut<PendingChunks>,
     mut unloaded: MessageWriter<ChunkUnloaded>,
     player: Query<&Transform, (With<WorldCamera>, Changed<Transform>)>,
 ) {
@@ -174,41 +237,83 @@ fn load_chunks_around_player(
 
     let center = ChunkPos::containing(transform.translation);
     let radius = config::RENDER_DISTANCE;
+    let above = config::CHUNKS_ABOVE_SEA_LEVEL;
+    let below = config::CHUNKS_BELOW_SEA_LEVEL;
 
     world.chunks.retain(|pos, _| {
-        let keep = in_render_distance(*pos, center, radius);
+        let keep = in_render_distance(*pos, center, radius, above, below);
         if !keep {
             info!("world: unloading chunk {pos:?}");
             unloaded.write(ChunkUnloaded { pos: *pos });
         }
         keep
     });
+    pending
+        .0
+        .retain(|pos, _| in_render_distance(*pos, center, radius, above, below));
 
     let radius = radius as i32;
+    let pool = AsyncComputeTaskPool::get();
     for dx in -radius..=radius {
         for dz in -radius..=radius {
-            let pos = ChunkPos {
-                x: center.x + dx,
-                y: center.y,
-                z: center.z + dz,
-            };
-            if !in_render_distance(pos, center, config::RENDER_DISTANCE)
-                || world.chunks.contains_key(&pos)
-            {
-                continue;
-            }
+            // Every column within horizontal range loads its whole height —
+            // not just `center.y`, the layer the player happens to be on.
+            for y in -(below as i32)..(above as i32) {
+                let pos = ChunkPos {
+                    x: center.x + dx,
+                    y,
+                    z: center.z + dz,
+                };
+                if !in_render_distance(pos, center, radius as u32, above, below)
+                    || world.chunks.contains_key(&pos)
+                    || pending.0.contains_key(&pos)
+                {
+                    continue;
+                }
 
-            info!("world: generating chunk {pos:?}");
-            world.chunks.insert(pos, generation::generate(pos));
-            loaded.write(ChunkLoaded { pos });
+                info!("world: queuing chunk {pos:?} for generation");
+                let task = pool.spawn(async move { generation::generate(pos) });
+                pending.0.insert(pos, task);
+            }
         }
     }
 }
 
+/// Picks up whichever queued chunks have finished generating, inserts them
+/// into [`LoadedChunks`], and fires [`ChunkLoaded`] for each.
+///
+/// Polls every pending task once, collecting finished ones into a plain
+/// `Vec` before touching [`PendingChunks`] again — removing a finished
+/// entry while still iterating the map it came from isn't possible in safe
+/// Rust, and polling an already-finished task a second time isn't something
+/// a future's contract promises to handle.
+fn apply_generated_chunks(
+    mut world: ResMut<LoadedChunks>,
+    mut pending: ResMut<PendingChunks>,
+    mut loaded: MessageWriter<ChunkLoaded>,
+) {
+    let finished: Vec<(ChunkPos, Chunk)> = pending
+        .0
+        .iter_mut()
+        .filter_map(|(&pos, task)| block_on(poll_once(task)).map(|chunk| (pos, chunk)))
+        .collect();
+
+    for (pos, chunk) in finished {
+        pending.0.remove(&pos);
+        info!("world: generated chunk {pos:?}");
+        world.insert(pos, chunk);
+        loaded.write(ChunkLoaded { pos });
+    }
+}
+
 /// Drops every loaded chunk when the world is left, so re-entering
-/// generates fresh rather than reusing whatever was left over.
-fn clear_loaded_chunks(mut world: ResMut<LoadedChunks>) {
+/// generates fresh rather than reusing whatever was left over. Also cancels
+/// anything still generating — otherwise a task from a previous visit to
+/// `InGame` could finish after this one starts and insert into the fresh
+/// [`LoadedChunks`] as if it belonged there.
+fn clear_loaded_chunks(mut world: ResMut<LoadedChunks>, mut pending: ResMut<PendingChunks>) {
     *world = LoadedChunks::default();
+    pending.0.clear();
 }
 
 #[cfg(test)]
@@ -221,28 +326,50 @@ mod tests {
 
     #[test]
     fn the_center_chunk_is_always_in_range() {
-        assert!(in_render_distance(pos(0, 0, 0), pos(0, 0, 0), 0));
-    }
-
-    #[test]
-    fn a_different_vertical_layer_is_never_in_range() {
-        assert!(!in_render_distance(pos(0, 1, 0), pos(0, 0, 0), 5));
+        assert!(in_render_distance(pos(0, 0, 0), pos(0, 0, 0), 0, 1, 1));
     }
 
     #[test]
     fn a_square_corner_is_excluded_by_the_circular_radius() {
         // At radius 1 the bounding square would include (1, 1), but it's
         // sqrt(2) chunks away — outside a radius-1 circle.
-        assert!(!in_render_distance(pos(1, 0, 1), pos(0, 0, 0), 1));
+        assert!(!in_render_distance(pos(1, 0, 1), pos(0, 0, 0), 1, 1, 1));
     }
 
     #[test]
     fn a_straight_edge_at_exactly_the_radius_is_included() {
-        assert!(in_render_distance(pos(1, 0, 0), pos(0, 0, 0), 1));
+        assert!(in_render_distance(pos(1, 0, 0), pos(0, 0, 0), 1, 1, 1));
     }
 
     #[test]
     fn one_chunk_past_the_radius_is_excluded() {
-        assert!(!in_render_distance(pos(2, 0, 0), pos(0, 0, 0), 1));
+        assert!(!in_render_distance(pos(2, 0, 0), pos(0, 0, 0), 1, 1, 1));
+    }
+
+    #[test]
+    fn render_distance_is_independent_of_the_players_own_height() {
+        // The player standing on y = 5 doesn't shift which vertical layers
+        // are in range — it's a fixed world extent, not a radius around them.
+        assert!(in_render_distance(pos(0, 0, 0), pos(0, 5, 0), 0, 1, 1));
+    }
+
+    #[test]
+    fn in_vertical_range_includes_sea_level_and_the_layer_below_it() {
+        assert!(in_vertical_range(0, 1, 1));
+        assert!(in_vertical_range(-1, 1, 1));
+    }
+
+    #[test]
+    fn in_vertical_range_excludes_anything_past_the_configured_extent() {
+        assert!(!in_vertical_range(1, 1, 1));
+        assert!(!in_vertical_range(-2, 1, 1));
+    }
+
+    #[test]
+    fn in_vertical_range_scales_with_above_and_below() {
+        assert!(in_vertical_range(19, 20, 12));
+        assert!(!in_vertical_range(20, 20, 12));
+        assert!(in_vertical_range(-12, 20, 12));
+        assert!(!in_vertical_range(-13, 20, 12));
     }
 }

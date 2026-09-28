@@ -53,6 +53,39 @@ impl ChunkPos {
             self.z as f32 * size,
         )
     }
+
+    /// The six chunks sharing a face with this one — the only neighbours
+    /// `render/`'s mesher reads border data from, since face culling never
+    /// looks past a direct neighbour (see `render::mesh`). Order is
+    /// arbitrary; nothing depends on it.
+    pub fn face_neighbors(self) -> [ChunkPos; 6] {
+        [
+            ChunkPos {
+                x: self.x + 1,
+                ..self
+            },
+            ChunkPos {
+                x: self.x - 1,
+                ..self
+            },
+            ChunkPos {
+                y: self.y + 1,
+                ..self
+            },
+            ChunkPos {
+                y: self.y - 1,
+                ..self
+            },
+            ChunkPos {
+                z: self.z + 1,
+                ..self
+            },
+            ChunkPos {
+                z: self.z - 1,
+                ..self
+            },
+        ]
+    }
 }
 
 /// One cube of blocks, [`config::CHUNK_SIZE`] to a side.
@@ -91,17 +124,6 @@ impl Chunk {
 
     /// Sets the block at a *local* position within this chunk (each axis in
     /// `0..CHUNK_SIZE`).
-    ///
-    /// `generate` no longer calls this directly — it fills the whole
-    /// placeholder floor in one shot via [`Self::fill_below_height`] — so it
-    /// has no real (non-test) caller right now. `#[allow]`, not `#[expect]`:
-    /// this is already called from `#[cfg(test)]` code (this file's own
-    /// tests, and `render::mesh`'s), so the lint fires in a plain `cargo
-    /// clippy`/`cargo check` but not in `cargo test`, where those callers
-    /// exist. `#[expect]` demands the lint fire in *every* build it's
-    /// compiled into, so it would (and did) warn "unfulfilled" the moment
-    /// `cargo test` compiled this — the opposite of what `#[expect]` is for.
-    #[allow(dead_code)]
     pub(crate) fn set_block(&mut self, local: UVec3, block: Block) {
         let index = Self::index(local);
         self.blocks[index] = block;
@@ -174,6 +196,24 @@ mod tests {
     fn the_origin_is_chunk_zero() {
         let pos = ChunkPos::containing(Vec3::ZERO);
         assert_eq!(pos, ChunkPos { x: 0, y: 0, z: 0 });
+    }
+
+    #[test]
+    fn face_neighbors_are_the_six_positions_one_step_away_on_one_axis() {
+        let center = ChunkPos { x: 5, y: -1, z: 2 };
+        let neighbors = center.face_neighbors();
+        assert_eq!(neighbors.len(), 6);
+        for neighbor in neighbors {
+            let dx = (neighbor.x - center.x).abs();
+            let dy = (neighbor.y - center.y).abs();
+            let dz = (neighbor.z - center.z).abs();
+            // Exactly one axis differs, and only by 1 — never a diagonal.
+            assert_eq!(
+                dx + dy + dz,
+                1,
+                "{neighbor:?} is not a face neighbour of {center:?}"
+            );
+        }
     }
 
     #[test]

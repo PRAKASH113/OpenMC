@@ -4,34 +4,32 @@
 item from #1 was either done, recorded in [`IMPROVEMENTS.md`](IMPROVEMENTS.md),
 or carried forward below with its current status.
 
-**Updated 2026-09-27, not re-run in full.** Building `render/` (chunk
-meshing and the chunk mesh lifecycle) resolved four items outright — 2.3
-(`World` renamed to `LoadedChunks`), 3.2 (chunks now unload), 4.1 (spawn
-height moved above ground), and 4.3 (`Chunk::block` gained a real caller, so
-the dead-code question is moot) — and fixed one doc comment 2.5 flagged
-(`RENDER_DISTANCE`'s "3×3 ring" wording). All five are removed below rather
-than left marked done; see `IMPROVEMENTS.md`'s 2026-09-27 entry for what
-changed and why.
+**Updated repeatedly through 2026-09-27, not re-run in full.** Tier 1 was
+worked through item by item rather than all at once: 1.1 (chunk storage
+order) and 1.2 (`Changed<Transform>` filter) done; 1.3's linker config
+restored, then actually enabled and confirmed working; 1.4 (Bevy feature
+trim) done, confirmed working; 1.5 (`opt-level`) reconfirmed unchanged; 1.6
+mostly done — real terrain generation (`noise`), the mesher swapped for
+`binary_greedy_meshing` (cross-chunk face culling included), and chunk
+generation itself moved to a background thread, leaving only meshing's own
+main-thread cost open (1.6a, below). Along the way, building `render/` had
+already separately resolved 2.3, 3.2, 4.1, and 4.3, and fixed a doc comment
+2.5 flagged. All of the above are done and removed from this file; the full
+history of *why*, in order, is in `IMPROVEMENTS.md`'s 2026-09-27 entries —
+this file only tracks what's still open. Everything below is otherwise
+unchanged from audit #2 and has not been re-checked against the current
+code.
 
-**Updated again, same day.** Went through tier 1 one item at a time: 1.1 and
-1.2 done (removed below); 1.3's file re-added, staged, still awaiting a
-deliberate enable; 1.4, 1.5, and 1.6 explicitly deferred with reasons
-recorded, rather than left as generic carry-overs — see `IMPROVEMENTS.md`.
-
-**Updated a third time, same day.** 1.3 and 1.4 acted on: the Windows linker
-enabled, unused Bevy features dropped, `noise` added — made without a build
-to confirm any of it, at explicit request.
-
-**Updated a fourth time, same day.** That build happened: dropping `audio`
-broke `app::plugin`'s `.disable::<bevy::audio::AudioPlugin>()` line exactly
-as its own comment predicted (the type no longer exists once the feature is
-gone), surfaced by rust-analyzer and fixed. After that, `cargo check`,
-`clippy`, `build`, `test` (27 pass), and a boot run were all run clean —
-confirming the UI renders without `2d`, `noise` resolves and compiles, and
-`rust-lld.exe` actually links successfully, not merely gets found. Item 1.7
-(which existed to flag this exact verification as outstanding) is resolved
-and removed. Everything else here is unchanged from audit #2 and has not
-been re-checked against the current code.
+**Updated again, 2026-09-28.** Vertical chunk loading was wired in ("Option
+A": every horizontally-in-range column loads its whole fixed height, from
+`CHUNKS_ABOVE_SEA_LEVEL` down to `CHUNKS_BELOW_SEA_LEVEL`, previously
+commented out and unread), alongside four testing-only visual debug features
+(`render::debug`: a wireframe toggle, a three-mode chunk-bounds grid with a
+lock, and a sea-level marker line) following the existing
+`TESTING_TOOLS_ENABLED` pattern. No open item here was resolved or newly
+raised by this round — see `IMPROVEMENTS.md`'s 2026-09-28 entry for the
+detail. Not yet re-scanned: file/line/test counts below are updated, but the
+pedantic/nursery and `cargo tree` passes were not re-run.
 
 This file lists improvements that are identified but **not yet done**,
 ranked by the four tiers in `CLAUDE.md`. Nothing here has been implemented.
@@ -41,14 +39,17 @@ Before proposing anything, check the standing decisions table in
 `IMPROVEMENTS.md`: an idea that contradicts a row there needs a conversation
 about that row, not a quiet change.
 
-**Scope scanned (2026-09-26):** all 35 Rust files (1,899 lines, largest
-190), `Cargo.toml`, `Cargo.lock`, `.gitignore`, every file in `docs/`,
-`README.md`, and the parent `CLAUDE.md`. Also run: `cargo clippy -- -D
-warnings` (clean), `cargo test` (15 pass), a `clippy::pedantic` +
-`clippy::nursery` pass, and `cargo tree -d`. Now 37 files (2,356 lines,
-largest 246) after adding `render/`, but the scan itself has not been
-repeated — treat file/line counts and the pedantic/nursery and `cargo tree`
-findings below as of the 26th, everything else as still current. How to
+**Scope originally scanned (2026-09-26):** all 35 Rust files (1,899 lines,
+largest 190), `Cargo.toml`, `Cargo.lock`, `.gitignore`, every file in
+`docs/`, `README.md`, and the parent `CLAUDE.md`. Also run: `cargo clippy
+-- -D warnings` (clean), `cargo test` (15 pass), a `clippy::pedantic` +
+`clippy::nursery` pass, and `cargo tree -d`. **Now (2026-09-28) 40 files
+(3,376 lines, largest 375 — `world/mod.rs`, still well under the 800-line
+limit), 35 tests.** The pedantic/nursery and `cargo tree` findings below are
+still only as of the 26th and have not been re-run since — everything added
+since then (`render/`, `config/debug.rs`, `world/debug.rs`, terrain
+generation, the mesher swap, async generation, vertical chunk loading,
+`render::debug`) has not been scanned by those two passes at all. How to
 repeat this scan is at the bottom of the file.
 
 ---
@@ -58,7 +59,7 @@ repeat this scan is at the bottom of the file.
 | ID | Tier | Finding | Effort | Recommendation |
 | --- | --- | --- | --- | --- |
 | 1.5 | Perf | `opt-level = 0` for our crate | Tiny | Reconfirmed: measure once greedy meshing exists |
-| 1.6 | Perf | Chunk generation runs synchronously; `mesh.rs` doesn't see across chunks | Medium | Deferred: alongside greedy meshing + async generation |
+| 1.6a | Perf | Meshing (still) runs synchronously on the main thread | Small–Med | Deferred until asked for |
 | 2.1 | Read | README controls table and module tree are wrong | Tiny | Do |
 | 2.2 | Read | ARCHITECTURE "Startup configuration" describes deleted modules | Small | Do |
 | 2.4 | Read | `unsafe_code` lint declared twice; comment contradicts `Cargo.toml` | Tiny | Decide which one to keep |
@@ -83,29 +84,26 @@ not yet the kind of tight, hot numeric loop the original note meant.
 **Greedy meshing is the real trigger** — profile a chunk mesh at `0` and `1`
 once that lands, and decide from the numbers rather than guessing.
 
-### 1.6 Chunk generation runs synchronously on the main thread — deferred
+### 1.6a Meshing still runs synchronously on the main thread
 
-`generate` is called inside a system, so a chunk is built within the frame
-that needs it. At `RENDER_DISTANCE = 2` that's up to 13 chunks, and moving
-across a chunk boundary can generate several in one frame — a hitch, though
-not yet a severe one at this size.
+Chunk *generation* moved to a background thread (see `IMPROVEMENTS.md`,
+2026-09-27) — meshing didn't. `render::spawn_chunk_meshes` still calls
+`mesh::chunk_mesh` directly in the system that reacts to `ChunkLoaded`, and
+that same system can re-mesh up to six already-spawned neighbours in the
+same frame (the cross-chunk seam fix from the previous entry). At
+`RENDER_DISTANCE = 2` a newly-loaded chunk can trigger up to 7 meshing calls
+in one frame — still a plain function with no ECS access internally, so the
+same `AsyncComputeTaskPool` treatment generation just got would apply
+directly, but this wasn't part of what was asked for this round.
 
-**Deliberately postponed**, alongside greedy meshing: multi-threaded
-chunk generation (`AsyncComputeTaskPool`) is planned as a follow-up to that
-work, not before it — `generate` is already a pure function, so moving it
-off the main thread needs no change to the function itself when the time
-comes.
-
-**Same trigger, and now an active cost, not just a future one:**
-`render::mesh` never looks past its own chunk's data — a block at a chunk
-edge always gets its boundary face, even where a neighbouring chunk would
-actually hide it. This was harmless when only one chunk was ever loaded; at
-`RENDER_DISTANCE = 2`, with up to 13 chunks loaded and touching, it is now
-real extra geometry drawn at every chunk seam. Still deferred alongside the
-rest of this item — greedy meshing is expected to fold in cross-chunk
-awareness as part of the same rework, so fixing it twice would be wasted
-effort. Fixing it needs `mesh.rs` to read the *other* chunk's edge blocks
-from `LoadedChunks`, which does not exist as a capability yet.
+**Recommendation:** defer until asked for, the same way generation itself
+was deferred before this round. If it's done, it needs a bit more care than
+generation's version: spawning a mesh entity and updating an existing one's
+`Mesh3d` handle both have to happen back on the main thread (`Commands` and
+component mutation aren't `Send` operations you can do from a background
+task), so only the `chunk_mesh` call itself moves to the task; the
+spawn/update step stays in a polling system, the same shape
+`apply_generated_chunks` already uses for generation.
 
 ---
 

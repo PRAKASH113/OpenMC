@@ -1,6 +1,10 @@
 //! The composition root: every part of the game, registered in one place.
 
 use bevy::prelude::*;
+#[cfg(debug_assertions)]
+use bevy::render::RenderPlugin as BevyRenderPlugin;
+#[cfg(debug_assertions)]
+use bevy::render::settings::{RenderCreation, WgpuFeatures, WgpuSettings};
 
 use crate::camera::CameraPlugin;
 use crate::input::GameInputPlugin;
@@ -24,29 +28,49 @@ impl Plugin for AppPlugin {
         // `GameStatePlugin` needs in place before it calls `init_state` —
         // registering them the other way round is not a compile error, just a
         // runtime warning and a state machine that never transitions.
-        app.add_plugins(
-            DefaultPlugins
-                .set(primary_window_plugin())
-                .set(log_plugin())
-                // Gilrs: the gamepad backend. There is no controller support,
-                // and left enabled it polls the OS for gamepad events every
-                // frame. Disabled at runtime rather than dropped from
-                // Cargo.toml's `bevy` features — unlike audio (below), Bevy
-                // doesn't gate it behind a feature at all, so a Cargo-level
-                // removal isn't available. Re-enable when controller support
-                // is built. It's a leaf plugin — nothing else in Bevy depends
-                // on it, so disabling it cannot break startup.
-                //
-                // Audio used to be disabled here the same way. It no longer
-                // needs to be: the `audio` Cargo feature was dropped instead
-                // (see Cargo.toml), which removes `bevy_audio` from the
-                // dependency tree entirely rather than just skipping the
-                // plugin at runtime — the stronger version of the same
-                // decision. `bevy::audio::AudioPlugin` no longer exists to
-                // reference, which is exactly what broke this line when the
-                // feature was dropped without updating it in the same pass.
-                .disable::<bevy::gilrs::GilrsPlugin>(),
-        );
+        let default_plugins = DefaultPlugins
+            .set(primary_window_plugin())
+            .set(log_plugin())
+            // Gilrs: the gamepad backend. There is no controller support,
+            // and left enabled it polls the OS for gamepad events every
+            // frame. Disabled at runtime rather than dropped from
+            // Cargo.toml's `bevy` features — unlike audio (below), Bevy
+            // doesn't gate it behind a feature at all, so a Cargo-level
+            // removal isn't available. Re-enable when controller support
+            // is built. It's a leaf plugin — nothing else in Bevy depends
+            // on it, so disabling it cannot break startup.
+            //
+            // Audio used to be disabled here the same way. It no longer
+            // needs to be: the `audio` Cargo feature was dropped instead
+            // (see Cargo.toml), which removes `bevy_audio` from the
+            // dependency tree entirely rather than just skipping the
+            // plugin at runtime — the stronger version of the same
+            // decision. `bevy::audio::AudioPlugin` no longer exists to
+            // reference, which is exactly what broke this line when the
+            // feature was dropped without updating it in the same pass.
+            .disable::<bevy::gilrs::GilrsPlugin>();
+
+        // Debug builds only: request the two GPU features `render::debug`'s
+        // wireframe toggle (`F8`) needs. Requesting them here, once, is the
+        // only way to get them — `WireframePlugin` itself can only check
+        // afterwards whether the device ended up with them, not ask for
+        // them itself. If the adapter doesn't support them, Bevy warns and
+        // the plugin quietly does nothing rather than failing to start; see
+        // `render::debug`'s module doc for what to check if wireframes never
+        // appear. Requested unconditionally in every debug build regardless
+        // of `config::debug::TESTING_TOOLS_ENABLED`, since that's a
+        // runtime "is this in use right now" switch, not something GPU
+        // capability negotiation at startup should depend on.
+        #[cfg(debug_assertions)]
+        let default_plugins = default_plugins.set(BevyRenderPlugin {
+            render_creation: RenderCreation::Automatic(Box::new(WgpuSettings {
+                features: WgpuFeatures::POLYGON_MODE_LINE | WgpuFeatures::IMMEDIATES,
+                ..default()
+            })),
+            ..default()
+        });
+
+        app.add_plugins(default_plugins);
 
         // Our domains. `GameStatePlugin` brings in every state itself, so
         // adding a state never touches this file — only `states/mod.rs`.
@@ -60,5 +84,12 @@ impl Plugin for AppPlugin {
             WorldPlugin,
             RenderPlugin,
         ));
+
+        // Bevy's own wireframe rendering — debug builds only, alongside the
+        // GPU features it needs above. `render::debug` owns everything about
+        // *when* wireframes actually show (the `F8` toggle, the config
+        // default); this just makes the capability exist at all.
+        #[cfg(debug_assertions)]
+        app.add_plugins(bevy::pbr::wireframe::WireframePlugin::default());
     }
 }

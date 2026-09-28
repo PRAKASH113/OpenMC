@@ -44,7 +44,7 @@ src/
 │   ├── window.rs            #   Title, size, borderless, fullscreen, present mode
 │   ├── input.rs             #   Key bindings, sensitivity, speed, sprint mode
 │   ├── camera.rs            #   Field of view
-│   ├── world.rs             #   Chunk size, render distance, world height
+│   ├── world.rs             #   Chunk size, render distance, world height, terrain noise
 │   └── debug.rs             #   TESTING_TOOLS_ENABLED (debug builds only)
 ├── window/                  # Building the window, and changing it at runtime
 │   ├── mod.rs               #   Shared fullscreen mode
@@ -52,14 +52,15 @@ src/
 │   └── toggles.rs           #   F10/F11 at runtime
 ├── world/                   # Voxel/chunk data: coordinates, storage, generation
 │   ├── mod.rs               #   LoadedChunks, ChunkLock, load/evict, tests
-│   ├── chunk.rs             #   ChunkPos, Chunk (flat block array), tests
+│   ├── chunk.rs             #   ChunkPos (+ face_neighbors), Chunk (flat block array), tests
 │   ├── block.rs             #   The Block type
-│   ├── generation.rs        #   ChunkPos -> Chunk, tests
+│   ├── generation.rs        #   ChunkPos -> Chunk, a noise heightmap, tests
 │   └── debug.rs             #   Chunk-lock hotkey (debug builds only)
 ├── render/                  # Turning loaded chunks into what's on screen
-│   ├── mod.rs               #   RenderPlugin: spawns/despawns chunk meshes, the world light
-│   ├── mesh.rs              #   Chunk -> Mesh, face-culled, tests
-│   └── material.rs          #   The shared chunk material
+│   ├── mod.rs               #   RenderPlugin: spawns/despawns/re-meshes chunk meshes, the world light
+│   ├── mesh.rs              #   Chunk -> Mesh via binary_greedy_meshing, tests
+│   ├── material.rs          #   The shared chunk material
+│   └── debug.rs             #   Wireframe/chunk-grid/sea-level toggles (debug builds only)
 └── utils/                   # Small, complete, unrelated-to-each-other pieces
     └── log.rs               #   Log filters
 ```
@@ -317,15 +318,18 @@ setting, so both live in `camera_world`.
 feature's hotkey checks before registering itself — see World's `debug.rs`
 paragraph for the two-gate shape this and `#[cfg(debug_assertions)]` form
 together. It's the odd one out in `config/`: everything else here is a
-player-facing setting; this exists purely for development.
+player-facing setting; this exists purely for development. It also owns
+`ChunkGridMode` (the three states `render::debug`'s chunk-bounds grid can
+be in) and every testing feature's `_INITIALLY_*` starting-state constant —
+a settings-surface enum lives here the same way `config::input::SprintMode`
+does, with the behaviour that interprets it living in whichever module owns
+the feature.
 
-`config::world` holds chunk size and render distance, both read by
-`world/` (see the World section below), plus two constants — chunk layers
-above and below sea level — that are written but not yet read anywhere,
-left commented out at the point of use. They document the intended vertical
-shape of the world ahead of the generation code that will need them, rather
-than existing unread and risking silent drift from what generation actually
-does.
+`config::world` holds chunk size and render distance, plus
+`CHUNKS_ABOVE_SEA_LEVEL`/`CHUNKS_BELOW_SEA_LEVEL` (now active, each set to
+`1` while vertical loading is new — see World's `mod.rs` paragraph) and the
+terrain-noise tuning constants `generation.rs` reads. All of it is read by
+`world/`; see the World section below.
 
 Bindings are settings and live here; interpreting them is behaviour and
 lives in `input/`. When action mapping, rebinding, or gamepad support arrive,
@@ -397,18 +401,42 @@ tags each chunk's mesh entity with the position it renders.
 `ChunkPos::containing` finds the chunk holding a world-space position by
 floor division, not truncation, which would misplace negative coordinates at
 the origin; `ChunkPos::origin` is the reverse, the chunk's corner in world
-space, which is where `render/` places its mesh entity. Both are
-unit-tested.
+space, which is where `render/` places its mesh entity. `ChunkPos::face_neighbors`
+returns the six chunks sharing a face with this one, in no particular
+order — `render/` uses it both to find which neighbours' padding to read
+when meshing and which already-spawned neighbours need re-meshing when a new
+chunk arrives. All three are unit-tested.
 
 **`generation.rs`** turns a `ChunkPos` into a `Chunk`. It is a pure function
 (no ECS, no I/O), so it is directly unit-tested and, later, safe to move off
-the main thread without touching anything else. What it builds today is a
-flat placeholder floor — solid in the bottom half of every chunk, identical
-regardless of position — not real terrain: that needs the sea-level concept
-`config::world` documents but does not wire in yet (see the comment on
-`CHUNKS_ABOVE_SEA_LEVEL`/`CHUNKS_BELOW_SEA_LEVEL` there). This exists so
-storage, coordinates, and the load/generate cycle can be built and tested
-against *something* before terrain generation is real.
+the main thread without touching anything else. Terrain is a heightmap: each
+`(x, z)` column gets its own height from an [`noise::Fbm<Perlin>`] (fractal
+Brownian motion — several octaves of Perlin noise summed together, tuned by
+`config::world::TERRAIN_OCTAVES`/`_FREQUENCY`/`_PERSISTENCE`), everything
+below that height filled solid, everything above left air. The noise is
+sampled in *world* space (`ChunkPos::origin() + local (x, z)`), not
+chunk-local space — the reason neighbouring chunks' terrain lines up at the
+seam instead of each chunk looking like its own disconnected island.
+`config::world::TERRAIN_AMPLITUDE` bounds how far the surface can stray from
+sea level (absolute world height `0`) in either direction — the surface
+never rises above `TERRAIN_AMPLITUDE` or sinks below `-TERRAIN_AMPLITUDE`,
+regardless of how many chunk layers `CHUNKS_ABOVE_SEA_LEVEL`/
+`_BELOW_SEA_LEVEL` load. That bound is what makes most loaded chunks
+trivial: one entirely below the band is solid rock through and through
+(one bulk `fill_below_height`, no noise sampled at all); one entirely above
+it is solid air (`Chunk::empty()`, zero work). Only a chunk whose vertical
+range actually overlaps the band costs a noise sample per column, and even
+then the guaranteed-solid portion of *that* chunk (whatever falls below
+`-TERRAIN_AMPLITUDE`) is still bulk-filled rather than checked block by
+block — only the band a column's actual height might land in needs
+per-block placement. This keeps generation cheap as
+`CHUNKS_ABOVE_SEA_LEVEL`/`_BELOW_SEA_LEVEL` grow: most of a tall world sits
+entirely outside the terrain band and costs nothing to generate. Seven unit
+tests cover determinism (the same position always regenerates identically),
+that height actually varies across a chunk, that no column's height escapes
+`0..CHUNK_SIZE` within its own chunk, that two different positions produce
+different terrain, and the three trivial/overlapping-chunk shortcuts
+themselves.
 
 **`LoadedChunks`** (in `mod.rs`) is a plain resource holding every generated
 chunk in a `HashMap<ChunkPos, Chunk>` — not one entity per chunk, because
@@ -420,32 +448,82 @@ type of the same name in the same file is exactly the kind of thing that
 silently means two different things depending on where you're standing.
 
 `load_chunks_around_player` runs every frame the game is `InGame`. It finds
-the player's current chunk, generates every not-yet-loaded chunk within
-[`config::world::RENDER_DISTANCE`] of it, and drops every loaded chunk that
-has fallen back out of range — eviction runs first, so the map is never
-briefly holding both an old and a new chunk in the same slot at the
-boundary. Both directions fire a message, `ChunkLoaded` or `ChunkUnloaded`,
-which is how `render/` finds out without polling `LoadedChunks` itself.
+the player's current chunk *column* and, for every column within
+[`config::world::RENDER_DISTANCE`] of it, queues generation for every
+vertical layer that column should have — the column's entire height, from
+`CHUNKS_ABOVE_SEA_LEVEL` above sea level down to `CHUNKS_BELOW_SEA_LEVEL`
+below it, not just the layer the player happens to be standing on ("Option
+A": every in-range column loads its whole fixed-height extent, as opposed
+to a vertical radius around the player's own position, which was considered
+and rejected — it doesn't match a world whose height is meant to be a fixed
+property of the world, not of wherever the player is right now). It also
+drops every loaded or in-flight chunk that has fallen out of range —
+eviction runs first, so no map is ever briefly holding both an old and a
+new chunk in the same slot at the boundary.
 
-**In range** is a circle, by squared distance (`in_render_distance`), not
-the bounding square a radius suggests — a square's far corners are up to
-`radius * sqrt(2)` chunks away, about 27% more chunks loaded for the same
-nominal distance than a circle, and they'd pop in and out at an inconsistent
-distance depending on which way the player is moving. This one function is
-the single source of truth for "is this chunk in range", used identically by
-both the load loop and the eviction check, so the two can never disagree at
-the boundary — which would otherwise be its own bug class (a chunk loaded by
-one rule and immediately evicted by a stricter one). The vertical axis is
-never part of the radius: a chunk one layer above or below the player is
-never in range no matter how large `RENDER_DISTANCE` is, because vertical
-range is the separate, not-yet-wired sea-level concept. Five unit tests pin
-this shape down directly, including the specific case that motivates the
-circle over the square (a diagonal chunk that a square would include).
+Generation itself does not happen inline in this system — it only decides
+what's wanted and hands each newly-wanted position to a background task
+(see "Async generation" below); loading and unloading still fire
+`ChunkLoaded`/`ChunkUnloaded` as before, just from a different system.
 
-On leaving `GameState::InGame`, `LoadedChunks` is reset to empty in one
-step rather than evicting chunk-by-chunk — re-entering generates fresh
-rather than reusing whatever was left over. This does **not** fire
+**In range** is two independent checks, both in `in_render_distance`: a
+horizontal circle (by squared distance) around the player's column, and
+`in_vertical_range` — whether a chunk's `y` falls inside the fixed
+`-CHUNKS_BELOW_SEA_LEVEL..CHUNKS_ABOVE_SEA_LEVEL` band. The horizontal
+circle, not the bounding square a radius suggests: a square's far corners
+are up to `radius * sqrt(2)` chunks away, about 27% more chunks loaded for
+the same nominal distance than a circle, and they'd pop in and out at an
+inconsistent distance depending on which way the player is moving. The
+vertical check is a fixed extent, not a radius — unlike the horizontal
+circle, it never shifts as the player moves up or down, since the world's
+height is meant to be constant regardless of where in it the player is
+standing. `in_render_distance` is the single source of truth for "is this
+chunk in range", used identically by the load loop, `LoadedChunks`'s
+eviction, and `PendingChunks`'s eviction, so none of the three can ever
+disagree at the boundary — which would otherwise be its own bug class (a
+chunk loaded by one rule and immediately evicted by a stricter one). Eight
+unit tests pin this shape down: the horizontal cases from before (including
+the diagonal-corner case that motivates the circle over the square), plus
+the vertical ones (independence from the player's own height, the sea-level
+boundary itself, the extent's edges, and that it scales correctly with
+`above`/`below`).
+
+On leaving `GameState::InGame`, `LoadedChunks` and `PendingChunks` are both
+reset to empty in one step rather than evicted chunk-by-chunk — re-entering
+generates fresh rather than reusing whatever was left over, and a task
+still running from the previous visit can't finish late and insert into the
+new session's map as if it belonged there. This does **not** fire
 `ChunkUnloaded` for each dropped chunk; see Render for why.
+
+**Async generation.** `generate` is a pure function (no ECS, no I/O — see
+`generation.rs`), so calling it costs nothing to move off the main thread:
+`load_chunks_around_player` spawns it on `bevy::tasks::AsyncComputeTaskPool`
+for each newly-wanted position and tracks the in-flight `Task<Chunk>` in
+`PendingChunks` (`HashMap<ChunkPos, Task<Chunk>>`, the same shape as
+`LoadedChunks` itself), keyed so the same chunk is never queued twice while
+one attempt is still running. A second system, `apply_generated_chunks`,
+polls every pending task once per frame (`block_on(poll_once(task))`),
+collects whichever have finished into a plain `Vec` first — removing an
+entry while still iterating the map it came from isn't possible in safe
+Rust, and polling an already-finished task a second time isn't part of a
+future's contract — then inserts each into `LoadedChunks` and fires
+`ChunkLoaded`, exactly as `load_chunks_around_player` used to do inline.
+`render/` needed zero changes for this: it reacts to the same message at
+the same point in the pipeline, indifferent to where the chunk data came
+from.
+
+The two systems deliberately have different run conditions.
+`load_chunks_around_player` keeps `chunk_loading_unlocked` and
+`Changed<Transform>` — deciding what's wanted still can't change unless the
+player moved. `apply_generated_chunks` only needs `in_state(InGame)`: a
+background task can finish on any frame, including one where the player is
+standing still, and it isn't gated on the chunk lock either — locking stops
+*new* work from being requested, but work already dispatched should still
+land when it finishes rather than being stranded in `PendingChunks` forever.
+Dropping a still-running `Task` (via `PendingChunks::retain`, driven by the
+same `in_render_distance` check as `LoadedChunks`'s own eviction) cancels
+it — there's no point letting a chunk finish generating for a position the
+player already left.
 
 **`debug.rs` (debug builds only) freezes loading for testing.** `ChunkLock`
 is a plain `bool` resource, defined unconditionally in `mod.rs` so
@@ -485,22 +563,34 @@ depends on `world/` — reading `LoadedChunks` and reacting to
 `ChunkLoaded`/`ChunkUnloaded` — and `world/` has no idea `render/` exists,
 the same direction as `input/` depending on `camera/`.
 
-**`mesh.rs`** builds a `Mesh` from a `&Chunk`, in the chunk's own local
-space (a block at `(x, y, z)` is a unit cube from that corner to
-`(x+1, y+1, z+1)`; the entity's `Transform`, built from `ChunkPos::origin`,
-is what places it in the world). It only emits a face where the neighbouring
-block **isn't** solid — a naive mesher emitting all six faces of every solid
-block would produce roughly 390,000 vertices for a half-solid chunk, almost
-all of them faces buried against a neighbour the camera can never see;
-culling those is the difference between that and a few thousand. It does
-**not** merge coplanar faces into larger quads (full greedy meshing) — that
-further optimisation is left for later. A chunk edge always counts as
-exposed, since neighbouring chunks aren't consulted yet; once
-`RENDER_DISTANCE` is raised above `0` this draws (harmlessly, since it's
-hidden behind the next chunk) extra faces at every chunk boundary, and
-removing them needs `mesh.rs` to look past its own chunk's data. Three unit
-tests cover an empty chunk producing no geometry, an isolated block getting
-all six faces, and two adjacent blocks culling the one face between them.
+**`mesh.rs`** builds a `Mesh` from a chunk, using the
+[`binary_greedy_meshing`](https://github.com/Inspirateur/binary-greedy-meshing)
+crate — a Rust port of the reference algorithm at
+[cgerikj/binary-greedy-meshing](https://github.com/cgerikj/binary-greedy-meshing)
+— rather than a hand-rolled mesher. This replaced an earlier hand-written
+face-culled mesher (still only emitting a face where the neighbouring block
+isn't solid, no merging) that lived here first; see Reversals in
+`IMPROVEMENTS.md`. The crate doesn't just cull hidden faces, it *merges*
+adjacent same-type faces into the largest quad it can, using bitwise
+operations to do it fast — a flat 32×32 floor becomes one quad instead of
+1,024. It's generic over chunk size (a `const` parameter on `bgm::Mesher`),
+so it works with our own `CHUNK_SIZE` rather than requiring its demo's 62.
+
+The crate needs its input **padded**: a chunk's own blocks in the middle,
+surrounded by one block of neighbouring data on every side, so it can tell
+whether a boundary face is hidden by whatever's next door.
+`write_neighbor_padding` fills that padding from `LoadedChunks`, wherever a
+face-adjacent neighbour happens to be loaded — this is what gives real
+cross-chunk face culling, closing the gap the old mesher had (it never
+looked past its own chunk's data at all; see `docs/AUDIT.md` 1.6). Only the
+six face-adjacent neighbours are read, never a diagonal one: the crate's
+face culling only ever looks at a cell's direct neighbour, so a diagonal
+chunk's data is never actually consulted regardless of what it contains. A
+neighbour that isn't loaded leaves its side of the padding as air, exactly
+the old exposed-edge behaviour. Three unit tests cover an empty chunk
+producing no geometry, a fully solid chunk with no neighbours merging into
+exactly one quad per side (six total — proof the merging is real, not just
+culling), and a solid neighbour on one side removing exactly that one face.
 
 **`material.rs`** builds one shared `Handle<StandardMaterial>` at `Startup`
 and every chunk mesh reuses it — the same reasoning the old placeholder
@@ -511,17 +601,67 @@ more than one visible block type worth telling apart.
 **`mod.rs`** wires it together: `spawn_chunk_meshes` reacts to `ChunkLoaded`
 by meshing the chunk and spawning an entity (`Mesh3d`, the shared material,
 a `Transform` at the chunk's origin, and the `ChunkPos` itself as a
-component); `despawn_chunk_meshes` reacts to `ChunkUnloaded` by looking the
-entity up in `ChunkEntities` (a `HashMap<ChunkPos, Entity>`, so a single-chunk
-despawn is one lookup rather than a scan) and despawning it.
-`despawn_all_chunk_meshes` runs on leaving `GameState::InGame` and clears
-every remaining entity in one pass — independent of `ChunkUnloaded`, since
-`world/`'s whole-map reset on the same transition doesn't fire one message
-per chunk. This module also owns the world's `DirectionalLight`: it exists
-purely so chunk meshes are visible, which is the same category of thing as
-the material they're given, and there's no better home for a single light
-yet — a dedicated lighting module is the natural extraction point once
-there's more than one.
+component). It then also **re-meshes any of that chunk's already-spawned
+neighbours** — necessary precisely because of the padding scheme above: a
+neighbour meshed *before* this chunk existed was built as if this side were
+open air, and nothing else would ever tell it that's no longer true.
+`despawn_chunk_meshes` reacts to `ChunkUnloaded` by looking the entity up in
+`ChunkEntities` (a `HashMap<ChunkPos, Entity>`, so a single-chunk despawn is
+one lookup rather than a scan) and despawning it. `despawn_all_chunk_meshes`
+runs on leaving `GameState::InGame` and clears every remaining entity in one
+pass — independent of `ChunkUnloaded`, since `world/`'s whole-map reset on
+the same transition doesn't fire one message per chunk. This module also
+owns the world's `DirectionalLight`: it exists purely so chunk meshes are
+visible, which is the same category of thing as the material they're given,
+and there's no better home for a single light yet — a dedicated lighting
+module is the natural extraction point once there's more than one.
+
+**`debug.rs` (debug builds only)** adds three visual testing aids, following
+the same two-gate shape as `world::debug` (`#[cfg(debug_assertions)]` plus
+`config::debug::TESTING_TOOLS_ENABLED`) and registered the same way — a
+plain `if` around `app.add_systems(...)`, so with testing tools off none of
+this exists in the schedule at all.
+
+- **Wireframes** (`F8`) flip Bevy's own `WireframeConfig.global`, to check
+  the greedy mesher is actually merging faces the way it claims to rather
+  than drawing individual triangles. This needs GPU features
+  (`POLYGON_MODE_LINE`, `IMMEDIATES`) requested up front, in `app::plugin`
+  (debug builds only) via a custom `RenderPlugin`/`WgpuSettings` — an
+  adapter that doesn't support them logs a warning and no-ops rather than
+  crashing, so this is safe to leave configured even if it's ever run on
+  hardware that can't do it.
+- **The chunk-bounds grid** (`F7` to cycle, `Alt+F7` to lock) draws a
+  gizmo cube around whichever chunk the camera is currently in, in one of
+  three modes owned by `config::debug::ChunkGridMode` (`None`, `Outline`,
+  `OutlineAndAxes` — the outline plus a line through the centre along each
+  axis, to find the middle at a glance). Locking (`ChunkGridLock`) freezes
+  the grid on its current chunk instead of following the camera, the same
+  idea as `world::ChunkLock` freezing loading — both share the shape "press
+  a key, something stops updating with the player's movement until pressed
+  again." `F7` and `Alt+F7` share one physical key because they're the same
+  gesture at two different commitment levels (cycle vs. lock), not two
+  unrelated actions — the two systems that read `TOGGLE_CHUNK_GRID` guard
+  against each other with `input_pressed(DEBUG_MODIFIER)`/`not(...)` so
+  only one ever fires from the same keypress.
+- **The sea-level marker** (`F6`) draws two long lines at absolute world
+  height `0` crossing under the camera's current `(x, z)`, showing at a
+  glance where `CHUNKS_BELOW_SEA_LEVEL` starts — the thing `generation.rs`'s
+  terrain band is centred on, made visible without reading a single
+  coordinate off the screen.
+
+All three read an `_INITIALLY_*` constant from `config::debug` at startup
+(`WIREFRAME_INITIALLY_VISIBLE`, `CHUNK_GRID_INITIAL_MODE`,
+`SEA_LEVEL_LINE_INITIALLY_VISIBLE`), each itself only taking effect while
+`TESTING_TOOLS_ENABLED` is on — the same reasoning `world::ChunkLock`'s
+starting value uses. The chunk-grid lock's own starting state
+(`CHUNK_GRID_INITIALLY_LOCKED`) is the odd one out: it can't just be a
+`Default` impl, because locking needs an actual chunk position, and none
+exists until the world camera has spawned. `apply_initial_chunk_grid_lock`
+runs every frame while `InGame`, does nothing until a camera exists to read
+a position from, and then applies the lock exactly once via a `Local<bool>`
+"have I already done this" flag — a robust alternative to trying to order
+this system after camera spawn explicitly, which would still race the first
+time `InGame` is entered.
 
 ## Utilities
 
