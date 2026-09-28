@@ -633,8 +633,9 @@ this exists in the schedule at all.
 - **The chunk-bounds grid** (`F7` to cycle, `Alt+F7` to lock) draws a
   gizmo cube around whichever chunk the camera is currently in, in one of
   three modes owned by `config::debug::ChunkGridMode` (`None`, `Outline`,
-  `OutlineAndAxes` — the outline plus a line through the centre along each
-  axis, to find the middle at a glance). Locking (`ChunkGridLock`) freezes
+  `OutlineAndAxes` — the outline, a line through the centre along each
+  axis, and a matching "+" on each of the six faces, so the cube reads as
+  eight sub-cubes). Locking (`ChunkGridLock`) freezes
   the grid on its current chunk instead of following the camera, the same
   idea as `world::ChunkLock` freezing loading — both share the shape "press
   a key, something stops updating with the player's movement until pressed
@@ -643,11 +644,22 @@ this exists in the schedule at all.
   unrelated actions — the two systems that read `TOGGLE_CHUNK_GRID` guard
   against each other with `input_pressed(DEBUG_MODIFIER)`/`not(...)` so
   only one ever fires from the same keypress.
-- **The sea-level marker** (`F6`) draws two long lines at absolute world
-  height `0` crossing under the camera's current `(x, z)`, showing at a
-  glance where `CHUNKS_BELOW_SEA_LEVEL` starts — the thing `generation.rs`'s
-  terrain band is centred on, made visible without reading a single
-  coordinate off the screen.
+- **The sea-level marker** (`F6`) draws a grid at absolute world height `0`
+  — one X-axis and one Z-axis line per currently-loaded chunk *column*
+  (`LoadedChunks::positions`, deduplicated by `(x, z)` since every vertical
+  layer of a column shares the same pair of lines), each spanning that
+  column's own width and crossing at its centre. Adjacent columns' lines
+  land edge to edge, so the individual crosses combine into one continuous
+  grid over the whole loaded area, showing at a glance where
+  `CHUNKS_BELOW_SEA_LEVEL` starts — the thing `generation.rs`'s terrain band
+  is centred on — tied to world position rather than following the camera
+  around (an earlier, camera-centred version is in Reversals).
+
+Every gizmo here draws on its own render layer (`GIZMO_LAYER`), which is
+added to the world camera only. Gizmos render to every camera whose layers
+overlap theirs, and on the shared default layer the UI camera, a fixed
+orthographic `Camera2d`, drew a flat copy of them pinned to the middle of
+the screen. Any gizmo added elsewhere later needs the same treatment.
 
 All three read an `_INITIALLY_*` constant from `config::debug` at startup
 (`WIREFRAME_INITIALLY_VISIBLE`, `CHUNK_GRID_INITIAL_MODE`,

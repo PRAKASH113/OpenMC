@@ -22,7 +22,17 @@ use bevy::prelude::*;
 /// is tolerable because a real one stops the app anyway, with a clearer
 /// message than the loader's. If a GPU bug ever needs diagnosing, comment
 /// this out first.
-const SILENCED: &str = "wgpu_hal::vulkan::instance=off";
+///
+/// `bevy_render::slab_allocator` logs an `ERROR` ("Use-after-free: attempted
+/// to copy element data for an unallocated key") for any mesh with zero
+/// vertices — a fully air chunk, or a fully solid one with every face culled
+/// by its neighbours, both routine here. Despite the name, nothing is
+/// actually freed while in use: Bevy 0.19's `MeshAllocator` skips
+/// *allocating* a zero-vertex mesh but still runs the copy step for it
+/// regardless, which is what logs this. Confirmed against Bevy's own issue
+/// tracker, not guessed — silenced here rather than worked around in our own
+/// code, since there is nothing to work around.
+const SILENCED: &str = "wgpu_hal::vulkan::instance=off,bevy_render::slab_allocator=off";
 
 /// Builds the [`LogPlugin`] with our filters layered on Bevy's defaults.
 ///

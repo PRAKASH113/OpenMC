@@ -11,6 +11,9 @@
 //! `WireframePlugin not loaded` — that means the adapter doesn't support
 //! them, not that anything here is broken.
 
+use std::collections::HashSet;
+
+use bevy::camera::visibility::RenderLayers;
 use bevy::input::common_conditions::{input_just_pressed, input_pressed};
 use bevy::pbr::wireframe::WireframeConfig;
 use bevy::prelude::*;
@@ -21,7 +24,7 @@ use crate::config::debug::ChunkGridMode;
 use crate::config::input;
 use crate::config::world as world_config;
 use crate::states::GameState;
-use crate::world::ChunkPos;
+use crate::world::{ChunkPos, LoadedChunks};
 
 /// How much of the chunk the camera is standing in gets outlined right now.
 ///
@@ -83,10 +86,17 @@ pub(super) fn register(app: &mut App) {
     app.init_resource::<ChunkGrid>()
         .init_resource::<ChunkGridLock>()
         .init_resource::<SeaLevelLine>()
-        .add_systems(Startup, apply_initial_wireframe_state)
+        .add_systems(
+            Startup,
+            (
+                apply_initial_wireframe_state,
+                move_gizmos_to_their_own_layer,
+            ),
+        )
         .add_systems(
             Update,
             (
+                let_world_camera_see_gizmos,
                 toggle_wireframe.run_if(input_just_pressed(input::TOGGLE_WIREFRAME)),
                 // The lock combination takes the same key as the plain
                 // cycle, so each condition has to explicitly exclude the
@@ -109,6 +119,36 @@ pub(super) fn register(app: &mut App) {
                     .run_if(in_state(GameState::InGame)),
             ),
         );
+}
+
+/// The render layer gizmos draw on. Anything but `0`, which every camera and
+/// mesh is on by default.
+///
+/// Gizmos render to *every* camera whose layers intersect theirs, and the UI
+/// camera (`camera::camera_ui`) is a `Camera2d` — orthographic, parked at
+/// the origin, never moving. Left on layer `0` with everything else, it drew
+/// its own flat copy of every gizmo on top of the world: the chunk cube seen
+/// face-on as a small square, the sea-level lines as a red segment, both
+/// pinned to the middle of the screen however the world camera moved.
+const GIZMO_LAYER: usize = 1;
+
+fn move_gizmos_to_their_own_layer(mut store: ResMut<GizmoConfigStore>) {
+    let (config, _) = store.config_mut::<DefaultGizmoConfigGroup>();
+    config.render_layers = RenderLayers::layer(GIZMO_LAYER);
+}
+
+/// Adds [`GIZMO_LAYER`] to the world camera, on top of the default layer `0`
+/// it renders chunk meshes from. The UI camera is left alone, on `0` only.
+///
+/// `Added` rather than an `OnEnter(InGame)` system: the camera is spawned in
+/// `camera::camera_world`'s own `OnEnter` system, and systems in the same
+/// schedule from different plugins have no guaranteed order.
+fn let_world_camera_see_gizmos(mut commands: Commands, cameras: Query<Entity, Added<WorldCamera>>) {
+    for camera in &cameras {
+        commands
+            .entity(camera)
+            .insert(RenderLayers::layer(0).with(GIZMO_LAYER));
+    }
 }
 
 /// Sets the starting wireframe visibility from
@@ -183,6 +223,14 @@ fn toggle_sea_level_line(mut visible: ResMut<SeaLevelLine>) {
     );
 }
 
+/// The axis colors every gizmo in this module uses consistently: a line
+/// parallel to X is always this red, parallel to Y always this green,
+/// parallel to Z always this blue — regardless of which cube or face it's
+/// drawn on, so the color alone identifies the axis at a glance.
+const AXIS_X_COLOR: Color = Color::srgb(1.0, 0.2, 0.2);
+const AXIS_Y_COLOR: Color = Color::srgb(0.2, 1.0, 0.2);
+const AXIS_Z_COLOR: Color = Color::srgb(0.2, 0.6, 1.0);
+
 /// Draws the current [`ChunkGrid`] mode around whichever chunk is relevant —
 /// the locked one from [`ChunkGridLock`] if set, otherwise whichever chunk
 /// the camera is currently in.
@@ -216,55 +264,86 @@ fn draw_chunk_grid(
 
     if grid.0 == ChunkGridMode::OutlineAndAxes {
         let half = size / 2.0;
+
+        // Through the middle, to find the centre at a glance.
         gizmos.line(
             center - half * Vec3::X,
             center + half * Vec3::X,
-            Color::srgb(1.0, 0.2, 0.2),
+            AXIS_X_COLOR,
         );
         gizmos.line(
             center - half * Vec3::Y,
             center + half * Vec3::Y,
-            Color::srgb(0.2, 1.0, 0.2),
+            AXIS_Y_COLOR,
         );
         gizmos.line(
             center - half * Vec3::Z,
             center + half * Vec3::Z,
-            Color::srgb(0.2, 0.6, 1.0),
+            AXIS_Z_COLOR,
         );
+
+        // And a "+" on every face, so each axis carries on across the
+        // cube's surface and the whole thing reads as eight sub-cubes. Each
+        // face's cross uses the two axes lying *in* that face (a face
+        // normal to X shows Y and Z), in their usual colors.
+        let faces = [
+            (Vec3::X, Vec3::Y, AXIS_Y_COLOR, Vec3::Z, AXIS_Z_COLOR),
+            (Vec3::Y, Vec3::X, AXIS_X_COLOR, Vec3::Z, AXIS_Z_COLOR),
+            (Vec3::Z, Vec3::X, AXIS_X_COLOR, Vec3::Y, AXIS_Y_COLOR),
+        ];
+        for (normal, a, color_a, b, color_b) in faces {
+            for side in [-1.0, 1.0] {
+                let face_center = center + side * half * normal;
+                gizmos.line(face_center - half * a, face_center + half * a, color_a);
+                gizmos.line(face_center - half * b, face_center + half * b, color_b);
+            }
+        }
     }
 }
 
-/// Draws a cross of two lines at sea level (absolute world height `0`,
-/// where `world::generation`'s terrain noise is centred), through the
-/// camera's current `(x, z)` position — below this line is where
-/// `CHUNKS_BELOW_SEA_LEVEL` starts.
-fn draw_sea_level_marker(
-    mut gizmos: Gizmos,
-    visible: Res<SeaLevelLine>,
-    camera: Query<&Transform, With<WorldCamera>>,
-) {
+/// Draws the sea-level plane (absolute world height `0`, where
+/// `world::generation`'s terrain noise is centred — below this line is
+/// where `CHUNKS_BELOW_SEA_LEVEL` starts) as a grid: every currently-loaded
+/// chunk *column* gets one line along each horizontal axis, each spanning
+/// that column's own width and crossing at its centre — so as more columns
+/// load, the individual crosses line up edge to edge into one continuous
+/// grid over the whole loaded area, instead of a single pair of lines
+/// following the camera around.
+///
+/// Deduplicated by `(x, z)`: every vertical layer of the same column would
+/// otherwise draw the identical pair of lines on top of each other, once
+/// per layer, for no visual difference.
+fn draw_sea_level_marker(mut gizmos: Gizmos, visible: Res<SeaLevelLine>, world: Res<LoadedChunks>) {
     if !visible.0 {
         return;
     }
-    let Ok(transform) = camera.single() else {
-        return;
-    };
 
-    // Long enough to reach past whatever's currently loaded, regardless of
-    // the exact render distance.
-    let span = ((world_config::RENDER_DISTANCE + 1) * world_config::CHUNK_SIZE) as f32;
-    let x = transform.translation.x;
-    let z = transform.translation.z;
-    let color = Color::srgba(0.2, 0.6, 1.0, 0.9);
+    let size = world_config::CHUNK_SIZE as f32;
+    let half = size / 2.0;
 
-    gizmos.line(
-        Vec3::new(x - span, 0.0, z),
-        Vec3::new(x + span, 0.0, z),
-        color,
-    );
-    gizmos.line(
-        Vec3::new(x, 0.0, z - span),
-        Vec3::new(x, 0.0, z + span),
-        color,
-    );
+    let mut columns = HashSet::new();
+    for pos in world.positions() {
+        if !columns.insert((pos.x, pos.z)) {
+            continue;
+        }
+
+        let column_origin = ChunkPos {
+            x: pos.x,
+            y: 0,
+            z: pos.z,
+        }
+        .origin();
+        let center = Vec3::new(column_origin.x + half, 0.0, column_origin.z + half);
+
+        gizmos.line(
+            center - half * Vec3::X,
+            center + half * Vec3::X,
+            AXIS_X_COLOR,
+        );
+        gizmos.line(
+            center - half * Vec3::Z,
+            center + half * Vec3::Z,
+            AXIS_Z_COLOR,
+        );
+    }
 }

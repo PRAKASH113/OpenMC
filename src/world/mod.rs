@@ -75,6 +75,16 @@ impl LoadedChunks {
         self.chunks.get(&pos)
     }
 
+    /// Every currently-loaded chunk's position, in no particular order.
+    ///
+    /// `render::debug`'s sea-level grid uses this to draw a marker per loaded
+    /// chunk *column* — it needs to know what's loaded without caring about
+    /// any chunk's actual block data, which `chunk` alone can't answer
+    /// without already knowing a position to ask about.
+    pub(crate) fn positions(&self) -> impl Iterator<Item = &ChunkPos> {
+        self.chunks.keys()
+    }
+
     /// Records `chunk` as loaded at `pos`, replacing whatever was there.
     ///
     /// The write counterpart to [`Self::chunk`] — kept `pub(crate)`, not

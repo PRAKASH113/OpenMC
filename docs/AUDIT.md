@@ -31,6 +31,17 @@ raised by this round — see `IMPROVEMENTS.md`'s 2026-09-28 entry for the
 detail. Not yet re-scanned: file/line/test counts below are updated, but the
 pedantic/nursery and `cargo tree` passes were not re-run.
 
+**Updated a third time, 2026-09-28, after an actual play session** (the
+first this project has had against real chunk loading and the new debug
+overlay). Found and fixed: redundant same-frame neighbour re-meshing during
+large loading bursts (real, though not what caused the log errors it was
+first suspected of); a genuine, confirmed-upstream Bevy 0.19 mesh-allocator
+logging quirk, now silenced (see "Checked and found nothing to do"); the
+chunk grid's per-face crosses read as a detached floating square up close
+and were reverted; and the sea-level marker was rebuilt from two
+camera-following lines into a real per-column grid. See `IMPROVEMENTS.md`'s
+2026-09-28 (2) and (3) entries. No open item here was affected.
+
 This file lists improvements that are identified but **not yet done**,
 ranked by the four tiers in `CLAUDE.md`. Nothing here has been implemented.
 When an item is acted on or rejected, move it to `IMPROVEMENTS.md` (a change
@@ -44,7 +55,7 @@ largest 190), `Cargo.toml`, `Cargo.lock`, `.gitignore`, every file in
 `docs/`, `README.md`, and the parent `CLAUDE.md`. Also run: `cargo clippy
 -- -D warnings` (clean), `cargo test` (15 pass), a `clippy::pedantic` +
 `clippy::nursery` pass, and `cargo tree -d`. **Now (2026-09-28) 40 files
-(3,376 lines, largest 375 — `world/mod.rs`, still well under the 800-line
+(3,446 lines, largest 385 — `world/mod.rs`, still well under the 800-line
 limit), 35 tests.** The pedantic/nursery and `cargo tree` findings below are
 still only as of the 26th and have not been re-run since — everything added
 since then (`render/`, `config/debug.rs`, `world/debug.rs`, terrain
@@ -288,6 +299,16 @@ reason:
   `bevy_encase_derive` proc-macro boundary.
 - **Security:** no network, no file I/O, no parsing of untrusted input. The
   only external input is keyboard and mouse.
+- **`bevy_render::slab_allocator` "Use-after-free" errors, logged during
+  large chunk-loading bursts:** confirmed (against Bevy's own issue tracker,
+  not guessed) to be a Bevy 0.19 logging quirk, not a real memory-safety
+  issue or a bug in this project — `MeshAllocator` skips allocating a
+  zero-vertex mesh (a fully air chunk, or a fully solid one with every face
+  culled by its neighbours, both routine here) but still runs the copy step
+  for it regardless, and that copy step is what logs this. Silenced in
+  `utils::log`'s `SILENCED` filter rather than worked around in our own
+  code, since there is nothing to work around. See `IMPROVEMENTS.md`,
+  2026-09-28 (3).
 
 ---
 

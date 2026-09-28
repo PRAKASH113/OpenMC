@@ -11,7 +11,7 @@ mod debug;
 mod material;
 mod mesh;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
@@ -77,7 +77,8 @@ fn despawn_world_light(mut commands: Commands, lights: Query<Entity, With<WorldL
 }
 
 /// Builds and spawns a mesh entity for every chunk that just loaded, and
-/// re-meshes any of its already-spawned neighbours.
+/// re-meshes whichever already-spawned neighbours that batch actually
+/// touches.
 ///
 /// The re-mesh matters because of how `mesh::chunk_mesh` hides faces at a
 /// chunk seam: it only knows about a neighbour that's loaded *at the moment
@@ -93,6 +94,8 @@ fn spawn_chunk_meshes(
     mut entities: ResMut<ChunkEntities>,
     mut mesh_handles: Query<&mut Mesh3d>,
 ) {
+    let mut spawned = HashSet::new();
+
     for ChunkLoaded { pos } in loaded.read() {
         let Some(chunk) = world.chunk(*pos) else {
             // The chunk was unloaded again before this system got to it —
@@ -111,21 +114,39 @@ fn spawn_chunk_meshes(
             ))
             .id();
         entities.0.insert(*pos, entity);
+        spawned.insert(*pos);
+    }
 
-        for neighbor_pos in pos.face_neighbors() {
-            let (Some(&neighbor_entity), Some(neighbor_chunk)) =
-                (entities.0.get(&neighbor_pos), world.chunk(neighbor_pos))
-            else {
-                // Not spawned yet, or not loaded: nothing to refresh. A
-                // neighbour that loads later will pick this chunk up itself,
-                // the same way this one just did.
-                continue;
-            };
-            let Ok(mut mesh3d) = mesh_handles.get_mut(neighbor_entity) else {
-                continue;
-            };
-            mesh3d.0 = meshes.add(chunk_mesh(neighbor_pos, neighbor_chunk, &world));
-        }
+    // Re-mesh every already-spawned neighbour this batch touches, each
+    // exactly once — not once per newly-loaded chunk that touches it, and
+    // never one that's itself in `spawned` (it already got a fully
+    // neighbour-aware mesh above, since every chunk generated this batch was
+    // already in `LoadedChunks` by the time the loop ran). Vertical loading
+    // can land dozens of chunks in one batch, and without deduplicating, a
+    // shared pre-existing neighbour could get rebuilt — and its mesh handle
+    // replaced, dropping the previous one — once per newly-loaded chunk that
+    // touches it, all within the same frame. That same-frame add-then-drop
+    // churn is what was observed tripping Bevy's own mesh slab allocator
+    // (`Use-after-free` errors logged during large loading bursts).
+    let dirty_neighbors: HashSet<ChunkPos> = spawned
+        .iter()
+        .flat_map(|pos| pos.face_neighbors())
+        .filter(|neighbor_pos| !spawned.contains(neighbor_pos))
+        .collect();
+
+    for neighbor_pos in dirty_neighbors {
+        let (Some(&neighbor_entity), Some(neighbor_chunk)) =
+            (entities.0.get(&neighbor_pos), world.chunk(neighbor_pos))
+        else {
+            // Not spawned, or not loaded: nothing to refresh. A neighbour
+            // that loads later will pick this chunk up itself, the same way
+            // this one just did.
+            continue;
+        };
+        let Ok(mut mesh3d) = mesh_handles.get_mut(neighbor_entity) else {
+            continue;
+        };
+        mesh3d.0 = meshes.add(chunk_mesh(neighbor_pos, neighbor_chunk, &world));
     }
 }
 

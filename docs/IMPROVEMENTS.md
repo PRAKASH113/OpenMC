@@ -133,6 +133,7 @@ Last reviewed in full: audit #2, 2026-09-26.
 | Testing-feature key bindings still live in `config/input.rs`, under the existing debug section, not in `config/debug.rs` | All key bindings live in one place regardless of owner, so the "no key bound twice" test covers them too. `config/debug.rs` holds the non-binding switch (`TESTING_TOOLS_ENABLED`) that gates whether those bindings do anything. |
 | A settings-surface enum for a testing feature (`ChunkGridMode`) lives in `config::debug`, the same as `config::input::SprintMode` — the type and its starting value in `config`, the behaviour that interprets it in the module that owns the feature (`render::debug`) | Consistent with every other config value in the project: `config` holds what's tunable, the domain module holds what it does. Requested explicitly for `ChunkGridMode` and the three sea-level/chunk-grid `_INITIALLY_*` constants. See 2026-09-27 (2). |
 | A starting state that needs live ECS data not yet available at `Default`-impl time (`CHUNK_GRID_INITIALLY_LOCKED`, which needs an actual camera position) is applied by a system with a `Local<bool>` "have I done this yet" guard, not a `Default` impl | The lock can't default to a position before a camera exists to read one from; ordering one system explicitly after camera spawn would still race the very first time the state is entered, where a `Local<bool>`-guarded system that simply runs every frame until it succeeds cannot. See 2026-09-27 (2). |
+| Gizmos draw on their own render layer (`render::debug::GIZMO_LAYER`), which only the world camera has; the UI camera stays on layer `0` alone | Gizmos render to every camera whose layers intersect theirs. On the shared default layer the UI camera — a fixed orthographic `Camera2d` — drew a flat copy of every gizmo pinned to the middle of the screen. Moving gizmos off layer `0`, rather than the UI camera, keeps UI rendering out of it entirely. See 2026-09-28 (4). |
 | Two testing actions can share one physical key if they're the same gesture at different commitment levels (`F7` cycles the chunk grid, `Alt+F7` locks it) — not a reason to spend a second key | The run conditions for both explicitly exclude each other's modifier state (`input_pressed(DEBUG_MODIFIER)` / `not(...)`), so exactly one fires per keypress. A dedicated modifier (`Left Alt`) rather than reusing `SPRINT_HOLD_KEY` (`Left Ctrl`): this is an unrelated debug gesture, not a second meaning for a gameplay key. See 2026-09-27 (2). |
 
 ### Render
@@ -174,6 +175,7 @@ not re-proposed as if it were new.
 | `regrab_on_focus_regained`, `Window::focused = true` after F10/F11, and a 0.25 s Escape debounce | Removed | Built for focus-loss and double-fire theories that the diagnostic logs disproved. |
 | Live window resize via `window.resolution = WindowResolution::new(..)` | `window.resolution.set(..)` | Reset the OS scale factor to `1.0`, so the window came back smaller after leaving fullscreen on scaled displays. |
 | Descend on Left Ctrl, sprint while holding Left Shift | Descend on Left Shift; sprint by double-tap, or holding Left Ctrl in `Hold` mode | Requested. |
+| Sea-level marker: two lines through the camera's own `(x, z)`, re-centring every frame | A grid: one X/Z cross per loaded chunk *column*, fixed to that column's centre, both axis-colored | Requested: a grid tied to world positions reads as a spatial reference; two lines chasing the camera don't. See 2026-09-28 (3). |
 | `paused/` as a top-level sibling of `ingame/` | `states/ingame/paused/` | The folders now say what the state machine already said: `Paused` exists inside `InGame`. |
 | `camera_2d` / `camera_3d` | `camera_ui` / `camera_world` | Named for what each camera shows rather than how it renders. |
 | Engine plugin config in `utils/engine.rs` | Inline in `AppPlugin::build`, next to the domain plugin list | Disabling `AudioPlugin`/`GilrsPlugin` and swapping in our window/log plugins is deciding what the app is made of — composition, not an adapter that turns our config into one Bevy value. |
@@ -1267,6 +1269,206 @@ the vertical extent actually renders correctly at `1`/`1` (a full column of
 new sea-level boundary), and whether any of the four hotkeys behave as
 intended in an actual running window — this environment cannot drive the
 game interactively to check either.*
+
+### 2026-09-28 (2)
+
+**First real play session against the 2026-09-28 batch above**, and three
+fixes from what it turned up: `bevy_render`'s mesh slab allocator logging
+`Use-after-free` errors during large loading bursts, and two of the four new
+debug visuals not reading as intended once actually seen on screen — the
+kind of feedback this environment's non-interactive boot checks can never
+surface, so worth recording as a distinct source of truth from "the tests
+pass."
+
+**Mesh slab allocator errors.** The play log showed
+`bevy_render::slab_allocator: Use-after-free: attempted to copy element data
+for an unallocated key`, repeatedly, immediately after each burst of newly
+generated chunks. Root cause: `render::spawn_chunk_meshes`'s neighbour
+re-mesh step (added 2026-09-27 for cross-chunk face culling) re-meshed a
+neighbour once per newly-loaded chunk that touched it, with no
+deduplication — and vertical loading can land a large batch in one frame
+(13 columns × 2 vertical layers = 26 chunks at the current `1`/`1` sea-level
+settings, all visible in the log's `queuing chunk` lines). Two ways this
+produced redundant work: a neighbour shared by several newly-loaded chunks
+in the same batch got rebuilt once per toucher instead of once, and a
+neighbour that was *itself* part of the batch got rebuilt again even though
+its own spawn already produced a fully neighbour-aware mesh (every chunk in
+a batch is already inserted into `LoadedChunks` by the time meshing runs, so
+order within the batch doesn't affect correctness — only how many times the
+same mesh got rebuilt). Each redundant rebuild replaces a `Mesh3d` handle,
+dropping the previous one, all within the same frame — same-frame
+add-then-drop churn is the known trigger shape for this class of Bevy
+renderer bug.
+
+Fixed by computing the full set of newly-spawned positions first, then
+deriving the set of neighbours to re-mesh as "every face-neighbour of a
+spawned chunk that is not itself spawned this batch," via a `HashSet` —
+each unique neighbour is now re-meshed at most once per frame, regardless of
+how many newly-loaded chunks touch it. For the initial full-world load
+burst this eliminates nearly all neighbour re-meshing outright (an interior
+chunk's neighbours are almost always also in the same batch); for a
+steady-state load/unload cycle it still correctly stitches new chunks
+against already-loaded ones, just without the duplicate work. This is a
+genuine perf/correctness fix independent of whether it's the *complete*
+explanation for the logged errors — same-frame handle churn was the
+strongest available lead, and cutting it to the necessary minimum is right
+regardless. *Not independently reproduced after the fix* — this environment
+cannot drive the game through an equivalent loading burst to confirm the
+error is gone, only that `cargo test` (35 pass), `clippy -- -D warnings`,
+`fmt`, and a boot run stay clean.
+
+**Chunk-grid axes didn't read as connected to the cube.** In play, standing
+inside a chunk (32 blocks is roomy — the box's near face fills the view)
+made the `OutlineAndAxes` centre-crossing lines look like a small, detached
+crosshair floating in space rather than something belonging to the cube:
+correct in world-space size and position (confirmed against `bevy_gizmos`'
+own source — `Gizmos::cube` draws a unit cube transformed by the given
+`Transform`, so `half = size / 2.0` was always dimensionally right), but
+under the strong perspective of standing close to a large box, a line whose
+only contact with the cube is a single point at each face's centre doesn't
+read as connected to it. Fixed by giving every one of the cube's six faces
+its own "+" — two lines in the *other* two axes' colours, spanning that
+face — so each axis visibly continues onto the cube's surface at both ends
+instead of dangling. `draw_face_cross` is the shared helper for all six.
+Colours stayed exactly as they were (requested explicitly to keep them) —
+red/green/blue now pulled into named constants (`AXIS_X_COLOR`/`_Y_COLOR`/
+`_Z_COLOR`) since the same three now recur across nine line calls instead
+of three.
+
+**Sea-level marker was two indistinguishable lines that felt omnipresent.**
+Both the X and Z lines were the same colour, so two crossing lines read as
+one indistinct smudge rather than two identifiable axes; recoloured to the
+same `AXIS_X_COLOR`/`AXIS_Z_COLOR` the chunk grid now uses, so the same
+colour vocabulary applies everywhere in the debug overlay. Span trimmed from
+`(RENDER_DISTANCE + 1) * CHUNK_SIZE` to exactly `RENDER_DISTANCE *
+CHUNK_SIZE`, matching what was actually asked for ("the length of the
+render distance"). The lines still re-centre on the camera's current
+`(x, z)` every frame, unchanged — marking sea level under wherever the
+player currently stands is the whole point, and nothing in the feedback
+asked for that to become a fixed-in-world-space marker instead.
+
+*Perf: the mesh-churn fix is a straightforward reduction in redundant work,
+not a new cost anywhere — the `HashSet` construction it adds is bounded by
+one loading batch's size, tiny next to the meshing work it's now skipping.
+The two visual fixes cost a handful of extra gizmo line calls (12 more per
+frame for the chunk grid, in `OutlineAndAxes` mode only, itself gated behind
+`TESTING_TOOLS_ENABLED`) — irrelevant next to the mesh generation they sit
+alongside. Correctness: `cargo fmt`, `clippy -- -D warnings`, `test` (35
+pass, unchanged — none of these three fixes touch pure logic with its own
+tests), and a boot run all clean. Confirmed by the user's own play session
+for what prompted this entry; not yet re-confirmed by eye after the fixes
+themselves, for the same reason as always — this environment cannot drive
+the game interactively.*
+
+### 2026-09-28 (3)
+
+**A second real play session against the previous entry's fixes**, which
+found the actual root cause of the slab allocator errors, and turned up two
+more visual notes on the debug overlay.
+
+**The `Use-after-free` errors were not the previous entry's mesh churn after
+all.** They persisted, unchanged in frequency, even on the very first
+loading burst — and that burst, worked through by hand against the
+2026-09-28 (2) fix, produces *zero* neighbour re-mesh calls (every neighbour
+of every chunk in an initial full-world load is itself also in that same
+batch, so the dedup step filters all of them out). That ruled out the
+previous diagnosis outright: something else was producing the errors, and it
+wasn't fixed by that entry, only coincidentally left just as frequent as
+before. Looked up rather than guessed at a second time: Bevy 0.19's
+`MeshAllocator` skips *allocating* a mesh with zero vertices but still runs
+the copy step for it regardless, and that copy step is what logs this
+specific error — for a mesh that was genuinely never allocated in the first
+place, not one freed while still in use. Despite the name, nothing unsafe
+happens. This fires constantly here: a fully air chunk (rare at `1`/`1`
+sea-level chunks, common once raised) or a fully solid *interior* chunk with
+every face culled by its own neighbours (very common — most chunks in the
+middle of a big loading burst) both produce a zero-vertex mesh from
+`chunk_mesh`. Silenced via the log filter in `utils::log`, the same pattern
+already used there for the Vulkan overlay-layer noise: `SILENCED` gained
+`bevy_render::slab_allocator=off`, with a doc comment recording the
+confirmed cause and the search that found it, rather than papering over it
+with no explanation. The 2026-09-28 (2) mesh-churn dedup fix stays — it's a
+real reduction in redundant work for the steady-state load/unload case, just
+not what these specific log lines were about.
+
+**Chunk grid: the per-face crosses were reverted** — *wrongly; the
+diagnosis below was mistaken and the crosses are back. See 2026-09-28 (4).*
+Seen in play, standing
+close to a chunk, the request that prompted the per-face "+" additions
+(2026-09-28 (2)) didn't read the way it was meant to: one face's cross
+(whichever one ends up roughly facing the camera at a distance) shows up as
+a small, visually detached square in the middle of the view rather than
+something clearly connected to the rest of the cube — mistakeable for an
+unrelated crosshair overlay, which is exactly how it was first described.
+Reverted to just the three centre-crossing lines, confirmed to look right on
+their own. See Reversals.
+
+**Sea-level marker: rebuilt as a real grid.** The previous version drew
+exactly two lines, centred on the camera's own `(x, z)` and re-centring
+every frame — which meant a line segment was almost always somewhere near
+the middle of the view no matter which way the camera looked, reading as a
+stray disconnected mark rather than a spatial reference tied to the world.
+Rebuilt to match what was actually asked for: one X-axis and one Z-axis
+line per currently-loaded chunk *column* (deduplicated across that column's
+vertical layers, which would otherwise draw the identical pair on top of
+itself once per layer), each spanning exactly that column's width and
+crossing at its centre. Adjacent columns' lines land edge-to-edge, so the
+individual crosses combine into one continuous grid over the whole loaded
+area — genuinely tied to world position instead of following the camera.
+Needed a new accessor, `LoadedChunks::positions`, returning every loaded
+position without needing to already know one to ask `chunk` about — the
+first thing in `render::debug` to need to enumerate *what's* loaded rather
+than look up one specific chunk.
+
+*Perf: the log filter change and the chunk-grid revert are both pure
+subtractions. The sea-level grid now costs two `gizmos.line` calls per
+loaded chunk *column* per frame instead of two total — bounded by however
+many columns are loaded (13 at the current `RENDER_DISTANCE`), still
+trivial next to meshing, and gated behind `TESTING_TOOLS_ENABLED` like
+everything else here. Correctness: `cargo fmt`, `clippy -- -D warnings`,
+`test` (35 pass, unchanged), and a boot run all clean. Confirmed by the
+user's own play session for what prompted this entry; the fixes themselves
+are not yet re-confirmed by eye, for the usual reason.*
+
+### 2026-09-28 (4)
+
+**The thing stuck in the middle of the screen was the UI camera drawing
+gizmos.** A third play session showed it plainly: after (3), a small yellow
+square with a red and green cross, and a separate red segment, both stayed
+fixed at screen centre no matter where the world camera looked. Nothing
+drawn in world space can do that. Something has to be rendering it through a
+camera that never moves, and the UI camera is exactly that: a `Camera2d`,
+orthographic, parked at the origin looking down −Z. Gizmos render to every
+camera whose render layers intersect the gizmo config's, and every camera
+starts on layer `0`. So the UI camera drew its own flat copy of every gizmo
+on top of the world. The chunk cube seen face-on became the square: X (red)
+horizontal, Y (green) vertical, and Z pointing straight at it, collapsing to
+nothing. The sea-level X lines became the red segment.
+
+This means (3)'s chunk-grid revert was a misdiagnosis. The per-face crosses
+never caused the square, since it appeared before they existed. They were
+the requested behaviour all along and are restored, now written as a
+three-row table (face normal, the two in-face axes and their colours)
+looped over both sides, instead of six near-identical calls.
+
+Fixed at the source: `render::debug` moves the default gizmo group onto
+`GIZMO_LAYER` (`1`) at startup, and adds that layer to the world camera
+(`RenderLayers::layer(0).with(GIZMO_LAYER)`, keeping `0` for chunk meshes)
+via an `Added<WorldCamera>` system. That camera is spawned by
+`camera::camera_world`'s own `OnEnter(InGame)` system, and there's no
+guaranteed order against another plugin's system in the same schedule. The
+UI camera is untouched, still on layer `0` only, so no UI rendering path is
+involved in the fix. The alternative of moving the UI camera off layer `0`
+was rejected for that reason.
+
+Worth knowing beyond debug tooling: any gizmo added later, anywhere, draws
+through the UI camera too unless it uses a config group on a layer only the
+world camera has. Today that's only `DefaultGizmoConfigGroup`, set here.
+
+*Perf: no change worth measuring. The UI camera now skips gizmo drawing it
+was doing for no benefit. Correctness: `cargo fmt`, `clippy -- -D
+warnings`, `test` (35 pass), and a boot run (no warnings or errors) all
+clean. The on-screen result still needs the user's own confirmation.*
 
 ---
 
