@@ -2,9 +2,10 @@
 //! together, and the function that runs it.
 //!
 //! Only the shape of the app lives here. The states and their machine are in
-//! [`crate::states`], configurable values in [`crate::config`], and the
-//! finished adapters that build the window and configure logging in
-//! [`crate::utils`]. Every domain is registered from [`plugin::AppPlugin`].
+//! [`crate::states`], configurable values in [`crate::config`], the window is
+//! built and controlled by [`crate::window`], and [`crate::utils`] holds only
+//! [`crate::utils::log`]. Every domain is registered from
+//! [`plugin::AppPlugin`].
 
 mod plugin;
 

@@ -9,7 +9,7 @@
 //!   not a state at all, because entering a state would tear down the screen
 //!   it is meant to sit on top of.
 //!
-//! Both are designed in `docs/ARCHITECTURE.md` and built when first needed.
+//! Both are designed in `docs/LOADING.md` and built when first needed.
 
 mod screen;
 

@@ -371,49 +371,6 @@ The window itself is cleared by whichever camera writes to it first each
 frame, so states without a world camera no longer need an opaque background
 of their own.
 
-## Startup configuration
-
-`app::config` is a flat list of `pub const` values — title, size, borderless,
-present mode — and nothing else. No structs, no `Default` impls, no types to
-thread through the codebase. It is meant to be opened, read in a few seconds,
-and edited, so anything that is not a knob someone would actually turn
-belongs elsewhere.
-
-The constants use Bevy's own enums where the setting *is* engine vocabulary
-(`PresentMode` rather than a mirrored copy). Mirroring would lose the
-fallback semantics — `AutoVsync` resolves to `FifoRelaxed` → `Fifo` and
-`AutoNoVsync` to `Immediate` → `Mailbox` → `Fifo`, whichever the driver
-supports — and would need updating every time Bevy's enum grows. Note this
-also means "let Bevy decide" is already a *value* (`AutoVsync`), not a
-separate mode of operation needing its own wrapper.
-
-`app::window::primary_window_plugin` reads those constants and produces
-Bevy's `WindowPlugin`, keeping every engine-shaped detail in one place:
-
-- Bevy has no "borderless" field. It models the title bar as
-  `Window::decorations` ("should decorations be drawn"), so `BORDERLESS` maps
-  to the **inverse** of it.
-- Present mode is a property of `Window`, not of a render plugin, so it is
-  applied here too.
-
-These constants describe **startup** only. Window size, present mode, mode
-and decorations are all live-mutable on the `Window` component, so anything
-changing them later mutates that component directly rather than touching
-these. `app::window::WindowControlPlugin` already does exactly that for the
-borderless and fullscreen toggles — the constants set where the window
-starts, the systems change it afterwards.
-
-Constants become a struct the day something needs to load them from disk at
-startup — not before.
-
-Two details in those toggles worth knowing. Fullscreen uses
-`BorderlessFullscreen` rather than exclusive `Fullscreen`: it alt-tabs
-instantly and does not change the display's video mode, which is what a
-modern game is expected to do. And leaving fullscreen explicitly restores
-`WIDTH` x `HEIGHT`, so the config values double as the remembered windowed
-size. The toggles are deliberately not gated on any game state — being able
-to leave fullscreen should not depend on where the player is in the game.
-
 ## Configuration
 
 `config/` is the single answer to "where do I change a setting?". It holds
@@ -428,6 +385,16 @@ depth than fits here.
 
 Nothing in `config/` knows about the engine beyond the types a value needs.
 Turning values into engine settings belongs to whoever consumes them.
+
+`config::window` holds title, size, borderless, and present mode, and uses
+Bevy's own enums where the setting *is* engine vocabulary — `PresentMode`
+rather than a mirrored copy. Mirroring would lose the fallback semantics —
+`AutoVsync` resolves to `FifoRelaxed` → `Fifo` and `AutoNoVsync` to
+`Immediate` → `Mailbox` → `Fifo`, whichever the driver supports — and would
+need updating every time Bevy's enum grows. This also means "let Bevy
+decide" is already a *value* (`AutoVsync`), not a separate mode of operation
+needing its own wrapper. See the Window section below for how
+`window::setup` turns these into Bevy's `WindowPlugin`.
 
 `config::input` holds every key binding, so the full set is visible at once
 and systems call `keys.pressed(input::FORWARD)` rather than naming a
@@ -472,14 +439,27 @@ they go in `input/` too, and `config::input` keeps holding the values.
 
 `window/` turns `config::window` into Bevy's window and keeps it updated, and
 is split by lifecycle rather than kept as one file: `setup.rs` runs once,
-before the app starts, to build the `WindowPlugin`; `toggles.rs` runs for the
-life of the game, handling F10/F11 by mutating the live `Window` component,
-which is how Bevy expects runtime window changes to be made. The one thing
-both need, the fullscreen mode, sits in `window/mod.rs`.
+before the app starts, to build the `WindowPlugin`; `toggles.rs` runs only on
+the frame F10 or F11 is pressed (gated by run conditions, not an `if` inside
+the system), mutating the live `Window` component, which is how Bevy expects
+runtime window changes to be made. The one thing both need, the fullscreen
+mode, sits in `window/mod.rs`.
 
 It is a top-level module, a sibling of `camera/` and `input/`, rather than
 tucked inside `utils/` — building and controlling the window is a whole
 domain in its own right, not a small adapter alongside something else.
+
+`config::window`'s constants describe **startup** only. Window size, present
+mode, mode and decorations are all live-mutable on the `Window` component, so
+anything changing them later mutates that component directly rather than
+touching the constants — `toggles.rs` does exactly that for the borderless
+and fullscreen toggles. Fullscreen uses `BorderlessFullscreen` rather than
+exclusive `Fullscreen`: it alt-tabs instantly and does not change the
+display's video mode, which is what a modern game is expected to do. Leaving
+fullscreen explicitly restores `WIDTH` x `HEIGHT`, so the config values
+double as the remembered windowed size. Both toggles are deliberately not
+gated on any game state — being able to leave fullscreen should not depend on
+where the player is in the game.
 
 ### Logical vs. physical size — the reason for the lifecycle split
 

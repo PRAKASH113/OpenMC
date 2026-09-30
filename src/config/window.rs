@@ -34,7 +34,9 @@ pub const FULLSCREEN: bool = false;
 
 /// How finished frames reach the display.
 ///
-/// `AutoVsync` and `AutoNoVsync` pick the best mode the driver actually supports.
-/// so they work everywhere — prefer them unless you are measuring something.
-/// `Fifo` (tear-free, one frame of latency), `Mailbox` (tear-free and low latency, burns frames and power) and `Immediate` (lowest latency, tears) force one specific mode and may be unsupported.
+/// `AutoVsync` and `AutoNoVsync` pick the best mode the driver actually
+/// supports, so they work everywhere — prefer them unless you are measuring
+/// something. `Fifo` (tear-free, one frame of latency), `Mailbox` (tear-free
+/// and low latency, burns frames and power) and `Immediate` (lowest latency,
+/// tears) force one specific mode and may be unsupported.
 pub const PRESENT_MODE: PresentMode = PresentMode::AutoVsync;

@@ -89,8 +89,9 @@ folder, so the tree shows how the states relate.
 For more detail, see the docs folder:
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how the pieces fit together
-- [docs/CONFIG.md](docs/CONFIG.md) — how `config/` is organized, and the
-  conventions every setting in it follows
+- [docs/CONFIG.md](docs/CONFIG.md) — how `config/` is organized, the
+  conventions every setting in it follows, and a full reference of every
+  current setting and its value
 - [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md) — why the code is the way it
   is, including decisions that were reversed
 - [docs/AUDIT.md](docs/AUDIT.md) — known improvements that are not done yet

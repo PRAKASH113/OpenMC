@@ -29,7 +29,7 @@ pub const CHUNK_SIZE: u32 = 32;
 /// Purely horizontal: every column within range loads its *entire* height
 /// (`CHUNKS_ABOVE_SEA_LEVEL` + `CHUNKS_BELOW_SEA_LEVEL` chunks), not just
 /// the layer the player happens to be on — see those two constants below.
-pub const RENDER_DISTANCE: u32 = 3;
+pub const RENDER_DISTANCE: u32 = 6;
 
 /// Number of chunk layers above sea level. Chunk `y = 0` is the first layer
 /// above sea level — it starts exactly at absolute block height `0`, chunk

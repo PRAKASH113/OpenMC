@@ -1667,6 +1667,65 @@ with no panics, warnings, or errors. Not confirmed by eye: whether the
 sprint reset actually feels right in play, and whether F5 visibly toggles
 collision — this environment still can't drive the game interactively.*
 
+### 2026-09-30 (2)
+
+**Audit #2 items 2.2, 2.4, 2.5, 2.6 resolved, and `CONFIG.md` expanded into a
+value reference.**
+
+**2.2 — the stale "Startup configuration" section in `ARCHITECTURE.md` is
+gone.** It described `app::config`, `app::window::primary_window_plugin`, and
+`app::window::WindowControlPlugin`, none of which have existed since the
+tier-2/3 restructures. Its two points that weren't already duplicated
+elsewhere moved to where they belong: why `config::window` uses Bevy's own
+enums directly (`PresentMode`'s fallback chain) went into the Configuration
+section, next to a new paragraph introducing `config::window` there for the
+first time; "these constants describe startup only, the live `Window`
+component is what changes at runtime" — plus the `BorderlessFullscreen` and
+leaving-fullscreen-restores-size details — went into the Window section,
+alongside a correction to a doc bug caught in the same pass: it claimed
+`toggles.rs` "runs for the life of the game" when it only runs on the frame
+F10/F11 is pressed (a run condition, not a body check).
+
+**2.4 — the duplicate `unsafe_code` lint declaration resolved.** The pasted
+IDE diagnostic (`Even Better TOML` still flagging `[lints.rust]
+unsafe_code = "deny"` in `Cargo.toml`) confirmed the warning the `main.rs`
+move was meant to silence was still firing — so the table was genuinely dead
+weight, not a stale note about an already-fixed extension. Took audit's
+option (a): deleted the `[lints.rust]` table, kept `#![deny(unsafe_code)]` in
+`main.rs` as the single declaration, and rewrote the comment to describe that
+as the only one rather than a comparison between two.
+
+**2.5 — six stale doc comments fixed**, all as the audit's table specified:
+`app/mod.rs`'s header (the window is `crate::window`, not an adapter in
+`utils`; `utils` only holds `log`), `window/mod.rs`'s header and
+`FULLSCREEN_MODE` doc (run-condition wording, and the missing `window::`
+prefix on `config::FULLSCREEN`), `states/mod.rs` and `states/loading/mod.rs`
+(both pointed the world-generation design at `ARCHITECTURE.md`; it's in
+`LOADING.md`), `config/window.rs`'s `PRESENT_MODE` doc (a broken sentence and
+over-length lines), and `input/movement.rs`'s `MOVEMENT_KEYS` doc (reworded
+for clarity). The `Cargo.toml` "realeases" typo living in the same table 2.4
+touched was fixed in that same edit rather than listed twice.
+
+**2.6 — `CLAUDE.md`'s "What exists today" now lists every module.** It was
+missing `player/`, `world/`, and `render/` (and `camera/`'s description
+hadn't caught up to the third-person follow). Updated to match
+`ARCHITECTURE.md`'s module tree, which was already current.
+
+**`docs/CONFIG.md` gained a full reference section.** The 2026-09-30 (1)
+entry above describes it as deliberately values-free, on the reasoning that
+values in two places drift. Requested anyway, on the understanding that it
+can go stale and the `///` comments remain the tie-breaker when it does — the
+file's own intro now says so directly. Every constant in `config/`'s six
+files is now listed with its current value and a one-line summary of what it
+does, grouped and ordered the same way the files themselves are, underneath
+the existing structural/convention sections (which are unchanged and still
+the part meant to stay evergreen).
+
+*Perf: none of this touches runtime code — doc and `Cargo.toml` comment
+changes only. Readability: this pass's whole point. Correctness: `cargo fmt
+--check` and `cargo check` both clean; no `.rs` logic changed so `cargo test`
+wasn't expected to move and wasn't re-run.*
+
 ---
 
 ## Open items

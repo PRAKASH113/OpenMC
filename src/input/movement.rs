@@ -31,7 +31,7 @@ use crate::config::player as player_config;
 use crate::config::player::GameMode;
 use crate::player::{ActiveGameMode, Flying, Motion, MovementIntent, Player};
 
-/// The keys a double-tap of any one of can engage sprint.
+/// Double-tapping any of these keys engages sprint.
 ///
 /// Only consulted when [`controls::SPRINT_MODE`] is
 /// [`controls::SprintMode::DoubleTap`].

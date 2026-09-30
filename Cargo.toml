@@ -92,15 +92,13 @@ opt-level = 3
 debug = false
 
 [profile.release]
-lto = "thin" # use "fat" for realeases
+lto = "thin" # use "fat" for releases
 codegen-units = 1
 strip = "symbols" # drops debug symbols; shrinks the binary a lot
 
 # ── Lints ───────────────────────────────────────────────────────────────
-[lints.rust]
-unsafe_code = "deny"
-# `unsafe_code = "deny"` is set as `#![deny(unsafe_code)]` in src/main.rs
-# rather than a `[lints.rust]` table here. The table is valid Cargo, but the
+# `unsafe_code = "deny"` is set as `#![deny(unsafe_code)]` in src/main.rs,
+# not as a `[lints.rust]` table here. The table form is valid Cargo, but the
 # "Even Better TOML" extension (0.21.x) fails to follow the schema's
-# cross-file reference for it and shows a false error. See main.rs for when to
-# move it back.
+# cross-file reference for it and shows a false error on this file. See
+# main.rs for when to move it back.

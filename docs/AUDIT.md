@@ -63,6 +63,18 @@ documenting `config/`'s structure and conventions rather than its current
 values. No open item here was resolved or newly raised. See
 `IMPROVEMENTS.md`, 2026-09-30.
 
+**Updated a second time, 2026-09-30.** 2.2, 2.4, 2.5, and 2.6 resolved: the
+stale "Startup configuration" section in `ARCHITECTURE.md` deleted and its
+two live points folded into "Configuration" and "Window" (plus a doc bug
+caught in the same pass — `toggles.rs` doesn't run every frame); the
+duplicate `unsafe_code` lint's `Cargo.toml` table deleted, confirmed still
+needed by a live IDE diagnostic rather than assumed stale; all six stale doc
+comments 2.5 listed fixed; `CLAUDE.md`'s module list updated with `player/`,
+`world/`, and `render/`. `docs/CONFIG.md` also gained a full per-file value
+reference on request, on top of its existing structure/convention sections.
+`cargo fmt --check`, `cargo check`, and `cargo test` (62 pass, unchanged) all
+clean. See `IMPROVEMENTS.md`, 2026-09-30 (2).
+
 This file lists improvements that are identified but **not yet done**,
 ranked by the four tiers in `CLAUDE.md`. Nothing here has been implemented.
 When an item is acted on or rejected, move it to `IMPROVEMENTS.md` (a change
@@ -95,10 +107,6 @@ scan is at the bottom of the file.
 | --- | --- | --- | --- | --- |
 | 1.5 | Perf | `opt-level = 0` for our crate | Tiny | Reconfirmed: measure once greedy meshing exists |
 | 1.6a | Perf | Meshing (still) runs synchronously on the main thread | Small–Med | Deferred until asked for |
-| 2.2 | Read | ARCHITECTURE "Startup configuration" describes deleted modules | Small | Do |
-| 2.4 | Read | `unsafe_code` lint declared twice; comment contradicts `Cargo.toml` | Tiny | Decide which one to keep |
-| 2.5 | Read | Stale or inaccurate doc comments in 7 places | Small | Do |
-| 2.6 | Read | `CLAUDE.md` "What exists today" is missing `world/` and `render/` | Tiny | Do |
 | 3.1 | Mod | `fly` is at the ~50-line limit, with sprint logic inline and untested | Small | Do |
 | 4.2 | Other | Test gaps: look clamp, `Hold` sprint, plugin wiring | Small–Med | Do the first two |
 | 4.4 | Other | Runtime checks still unconfirmed | — | Check by eye |
@@ -139,66 +147,6 @@ component mutation aren't `Send` operations you can do from a background
 task), so only the `chunk_mesh` call itself moves to the task; the
 spawn/update step stays in a polling system, the same shape
 `apply_generated_chunks` already uses for generation.
-
----
-
-## Tier 2 — Readability and discoverability
-
-### 2.2 ARCHITECTURE "Startup configuration" describes deleted modules
-
-The section talks about `app::config`, `app::window::primary_window_plugin`
-and `app::window::WindowControlPlugin`. None of these has existed since the
-tier-2 and tier-3 restructures (they are `config::window`,
-`window::setup::primary_window_plugin` and
-`window::toggles::WindowControlPlugin`). Most of its content also repeats
-the later "Configuration" and "Window" sections.
-
-**Recommendation:** delete the section. Move its two unique points into
-"Configuration" and "Window": why Bevy enums are used directly
-(`PresentMode`'s fallback chain), and "constants describe startup; the live
-`Window` component is what changes at runtime".
-
-### 2.4 The `unsafe_code` lint is declared twice, and the comment is wrong
-
-`Cargo.toml` still has an active `[lints.rust] unsafe_code = "deny"` table.
-The comment directly under it says the lint is set in `main.rs` "rather
-than" in that table. `main.rs` also has `#![deny(unsafe_code)]`. Git shows
-the table was never removed when the lint moved. So the editor warning that
-the move was meant to silence is presumably still there, and a reader cannot
-tell which declaration is the real one.
-
-**Recommendation — pick one:**
-
-- **(a) Delete the table.** This finishes the original decision. The IDE
-  warning goes away, and the comment becomes true.
-- **(b) Keep the table, delete the `main.rs` attribute and fix the comment.**
-  Choose this if the editor warning no longer appears (for example, after an
-  extension update). `[lints]` is the form that also covers future
-  `tests/`, benches, and workspace members.
-
-Either way, update the matching notes in `main.rs`, `Cargo.toml` and
-`CLAUDE.md` together.
-
-### 2.5 Stale or inaccurate doc comments
-
-| Where | Says | Should say |
-| --- | --- | --- |
-| `app/mod.rs` header | the window is built by "finished adapters … in `crate::utils`" | the window is `crate::window`; `utils` only holds `log` |
-| `window/mod.rs` header | "`toggles` runs every frame" | runs only on the frame F10/F11 is pressed (run conditions) |
-| `window/mod.rs` `FULLSCREEN_MODE` | `config::FULLSCREEN` | `config::window::FULLSCREEN` |
-| `states/mod.rs` `GameState::Loading`, `states/loading/mod.rs` header | the world-generation design is in `docs/ARCHITECTURE.md` | it is in `docs/LOADING.md` |
-| `config/window.rs` `PRESENT_MODE` | "…actually supports. so they work…", with lines over 100 characters | fix the sentence, re-wrap |
-| `input/movement.rs` `MOVEMENT_KEYS` | "The keys a double-tap of any one of can engage sprint" | "Double-tapping any of these keys engages sprint" |
-| `Cargo.toml` release profile | "realeases" | "releases" |
-
-### 2.6 `CLAUDE.md` "What exists today" is missing `world/` and `render/`
-
-The parent `CLAUDE.md` (outside this repo) lists every current module except
-`world/` and `render/`. Its architecture section also still shows both only
-as future targets. It is the first thing a new contributor reads.
-
-**Recommendation:** add `world/` (chunk coordinates, storage, generation) and
-`render/` (chunk meshing, materials, the chunk mesh lifecycle) to that list.
 
 ---
 

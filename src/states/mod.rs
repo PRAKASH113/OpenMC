@@ -32,7 +32,7 @@ pub enum GameState {
     ///
     /// This is *boot* loading only. Generating a world belongs inside
     /// [`GameState::InGame`] as its first sub-state, because the world must
-    /// exist while it is being built — see `docs/ARCHITECTURE.md`.
+    /// exist while it is being built — see `docs/LOADING.md`.
     #[default]
     Loading,
     /// Main menu.
