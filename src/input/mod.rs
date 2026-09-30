@@ -1,9 +1,11 @@
-//! Player controls: what the player's input does to the world view.
+//! Player controls: what the player's input does to the player.
 //!
-//! Each file is one control — [`look`] turns the mouse into view rotation,
-//! [`movement`] turns keys into flight, and [`cursor`] captures the mouse so
-//! looking works. They all steer the world camera, which lives in
-//! [`crate::camera`]; that module owns the camera, this one owns the controls.
+//! Each file is one control — [`look`] turns the mouse into where the player
+//! looks, [`movement`] turns keys into what the player wants to do (walk,
+//! jump, fly), and [`cursor`] captures the mouse so looking works. They all steer the player, which lives in
+//! [`crate::player`]; that module owns the player, this one owns the
+//! controls. The camera follows the player on its own (`camera::follow`) and
+//! is never touched from here.
 //!
 //! Two related things deliberately live elsewhere:
 //!
@@ -15,8 +17,8 @@
 //!   controls that *interpret* input continuously, every frame.
 //!
 //! Every control here runs only while [`InGameState::Playing`], which is what
-//! makes pausing freeze the view rather than draw an overlay over a camera
-//! that is still moving.
+//! makes pausing freeze the player (and so the view) rather than draw an
+//! overlay over a world that is still moving.
 
 mod cursor;
 mod look;
@@ -24,6 +26,7 @@ mod movement;
 
 use bevy::prelude::*;
 
+use crate::player::PlayerPhysics;
 use crate::states::InGameState;
 
 /// Registers every player control.
@@ -34,9 +37,14 @@ pub struct GameInputPlugin;
 
 impl Plugin for GameInputPlugin {
     fn build(&self, app: &mut App) {
+        // Look before movement, so movement's facing is this frame's; both
+        // before the player's physics, so it acts on this frame's keys.
         app.add_systems(
             Update,
-            (look::look, movement::fly).run_if(in_state(InGameState::Playing)),
+            (look::look, movement::read_movement)
+                .chain()
+                .before(PlayerPhysics)
+                .run_if(in_state(InGameState::Playing)),
         )
         .add_systems(OnEnter(InGameState::Playing), cursor::grab)
         .add_systems(OnExit(InGameState::Playing), cursor::release);

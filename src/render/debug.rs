@@ -23,10 +23,13 @@ use crate::config::debug as debug_config;
 use crate::config::debug::ChunkGridMode;
 use crate::config::input;
 use crate::config::world as world_config;
+use crate::player::{Player, in_creative};
 use crate::states::GameState;
 use crate::world::{ChunkPos, LoadedChunks};
 
-/// How much of the chunk the camera is standing in gets outlined right now.
+/// How much of the chunk the player is standing in gets outlined right now.
+/// The player rather than the camera: in third person the camera sits several
+/// blocks behind, often in the neighbouring chunk.
 ///
 /// The possible values ([`ChunkGridMode`]) and the starting one
 /// (`config::debug::CHUNK_GRID_INITIAL_MODE`) both live in `config`, the
@@ -52,15 +55,15 @@ impl ChunkGrid {
 }
 
 /// While `Some`, the chunk-bounds grid stays fixed on that position instead
-/// of following the camera — [`input::DEBUG_MODIFIER`] + `TOGGLE_CHUNK_GRID`
+/// of following the player — [`input::DEBUG_MODIFIER`] + `TOGGLE_CHUNK_GRID`
 /// engages or releases it, mirroring how `world::ChunkLock` freezes chunk
 /// loading.
 ///
 /// Always starts `None` regardless of
 /// `config::debug::CHUNK_GRID_INITIALLY_LOCKED`: locking needs an actual
-/// chunk position, and none exists until the world camera has spawned — see
+/// chunk position, and none exists until the player has spawned — see
 /// [`apply_initial_chunk_grid_lock`], which applies that setting once a
-/// camera actually exists to read a position from.
+/// player actually exists to read a position from.
 #[derive(Resource, Default)]
 struct ChunkGridLock(Option<ChunkPos>);
 
@@ -97,20 +100,26 @@ pub(super) fn register(app: &mut App) {
             Update,
             (
                 let_world_camera_see_gizmos,
-                toggle_wireframe.run_if(input_just_pressed(input::TOGGLE_WIREFRAME)),
-                // The lock combination takes the same key as the plain
-                // cycle, so each condition has to explicitly exclude the
-                // other's modifier state — otherwise one press of `F7`
-                // while holding the modifier would fire both.
-                cycle_chunk_grid_mode.run_if(
-                    input_just_pressed(input::TOGGLE_CHUNK_GRID)
-                        .and_then(not(input_pressed(input::DEBUG_MODIFIER))),
-                ),
-                toggle_chunk_grid_lock.run_if(
-                    input_just_pressed(input::TOGGLE_CHUNK_GRID)
-                        .and_then(input_pressed(input::DEBUG_MODIFIER)),
-                ),
-                toggle_sea_level_line.run_if(input_just_pressed(input::TOGGLE_SEA_LEVEL_LINE)),
+                // Every key here only works in Creative. What they've
+                // already switched on stays on in Survival; switch back to
+                // Creative to turn it off.
+                (
+                    toggle_wireframe.run_if(input_just_pressed(input::TOGGLE_WIREFRAME)),
+                    // The lock combination takes the same key as the plain
+                    // cycle, so each condition has to explicitly exclude the
+                    // other's modifier state — otherwise one press of `F7`
+                    // while holding the modifier would fire both.
+                    cycle_chunk_grid_mode.run_if(
+                        input_just_pressed(input::TOGGLE_CHUNK_GRID)
+                            .and_then(not(input_pressed(input::DEBUG_MODIFIER))),
+                    ),
+                    toggle_chunk_grid_lock.run_if(
+                        input_just_pressed(input::TOGGLE_CHUNK_GRID)
+                            .and_then(input_pressed(input::DEBUG_MODIFIER)),
+                    ),
+                    toggle_sea_level_line.run_if(input_just_pressed(input::TOGGLE_SEA_LEVEL_LINE)),
+                )
+                    .run_if(in_creative),
                 (
                     apply_initial_chunk_grid_lock,
                     draw_chunk_grid,
@@ -173,15 +182,15 @@ fn cycle_chunk_grid_mode(mut grid: ResMut<ChunkGrid>) {
     info!("render: chunk grid -> {:?}", grid.0);
 }
 
-/// Engages or releases [`ChunkGridLock`] on whichever chunk the camera is
+/// Engages or releases [`ChunkGridLock`] on whichever chunk the player is
 /// currently in.
 fn toggle_chunk_grid_lock(
     mut lock: ResMut<ChunkGridLock>,
-    camera: Query<&Transform, With<WorldCamera>>,
+    player: Query<&Transform, With<Player>>,
 ) {
     lock.0 = match lock.0 {
         Some(_) => None,
-        None => camera.single().ok().map(|transform| {
+        None => player.single().ok().map(|transform| {
             let pos = ChunkPos::containing(transform.translation);
             info!("render: chunk grid locked to {pos:?}");
             pos
@@ -193,20 +202,20 @@ fn toggle_chunk_grid_lock(
 }
 
 /// Applies [`debug_config::CHUNK_GRID_INITIALLY_LOCKED`] the first frame a
-/// world camera exists to read a position from — see [`ChunkGridLock`]'s
-/// doc comment for why this can't just be a `Default` impl. Runs every
-/// frame while `InGame` until it succeeds once, via the `Local<bool>` "have
-/// I already done this" flag, then does nothing for the rest of the
-/// process's lifetime.
+/// player exists to read a position from — see [`ChunkGridLock`]'s doc
+/// comment for why this can't just be a `Default` impl. Runs every frame
+/// while `InGame` until it succeeds once, via the `Local<bool>` "have I
+/// already done this" flag, then does nothing for the rest of the process's
+/// lifetime.
 fn apply_initial_chunk_grid_lock(
     mut lock: ResMut<ChunkGridLock>,
     mut applied: Local<bool>,
-    camera: Query<&Transform, With<WorldCamera>>,
+    player: Query<&Transform, With<Player>>,
 ) {
     if *applied || !debug_config::CHUNK_GRID_INITIALLY_LOCKED {
         return;
     }
-    let Ok(transform) = camera.single() else {
+    let Ok(transform) = player.single() else {
         return;
     };
     let pos = ChunkPos::containing(transform.translation);
@@ -233,12 +242,12 @@ const AXIS_Z_COLOR: Color = Color::srgb(0.2, 0.6, 1.0);
 
 /// Draws the current [`ChunkGrid`] mode around whichever chunk is relevant —
 /// the locked one from [`ChunkGridLock`] if set, otherwise whichever chunk
-/// the camera is currently in.
+/// the player is currently in.
 fn draw_chunk_grid(
     mut gizmos: Gizmos,
     grid: Res<ChunkGrid>,
     lock: Res<ChunkGridLock>,
-    camera: Query<&Transform, With<WorldCamera>>,
+    player: Query<&Transform, With<Player>>,
 ) {
     if grid.0 == ChunkGridMode::None {
         return;
@@ -247,7 +256,7 @@ fn draw_chunk_grid(
     let pos = match lock.0 {
         Some(locked) => locked,
         None => {
-            let Ok(transform) = camera.single() else {
+            let Ok(transform) = player.single() else {
                 return;
             };
             ChunkPos::containing(transform.translation)

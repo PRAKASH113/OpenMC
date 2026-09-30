@@ -8,8 +8,9 @@ playable voxel game while keeping the codebase clean enough that anyone can
 pick it up, understand it, and contribute.
 
 > **Status: early development.** The game currently has a loading screen, a
-> main menu, a pause screen, and a basic 3D in-game scene with a free-flying
-> camera. Terrain, chunks, and block placing/breaking are next.
+> main menu, a pause screen, procedurally generated voxel terrain, and a
+> player with a third-person camera, gravity, and a Survival/Creative mode
+> switch. Block placing/breaking is next.
 
 ## Goals
 
@@ -40,17 +41,24 @@ binary, use `cargo check`.
 
 ### Controls
 
-| Key             | Action                   |
-| --------------- | ------------------------ |
-| `W` `A` `S` `D` | Move                     |
-| `Space`         | Fly up                   |
-| `Left Ctrl`     | Fly down                 |
-| `Left Shift`    | Sprint                   |
-| `Esc`           | Pause / resume           |
-| `F10`           | Toggle borderless window |
-| `F11`           | Toggle fullscreen        |
+| Key                         | Action                           |
+| --------------------------- | -------------------------------- |
+| `W` `A` `S` `D`             | Move / strafe                    |
+| `Space`                     | Jump (on foot), rise (flying)    |
+| `Space` `Space`             | Take off, in Creative            |
+| `Left Shift`                | Descend, while flying            |
+| `Left Shift` `Left Shift`   | Land, while flying               |
+| Double-tap `W`/`A`/`S`/`D`  | Sprint                           |
+| `F4`                        | Switch Survival / Creative       |
+| `Esc`                       | Pause / resume                   |
+| `F10`                       | Toggle borderless window         |
+| `F11`                       | Toggle fullscreen                |
 
-All key bindings live in [src/config/input.rs](src/config/input.rs).
+Survival has gravity and no flight. Creative adds flight (double-tap
+`Space` to take off, `Left Shift` to land) and the debug-build testing
+keys. All key bindings live in
+[src/config/input.rs](src/config/input.rs); game mode and physics tuning
+live in [src/config/player.rs](src/config/player.rs).
 
 ## Project Layout
 
@@ -65,10 +73,13 @@ src/
 │   ├── menu/        #   Main menu
 │   └── ingame/      #   The game world
 │       └── paused/  #     Pause screen (a sub-state of in-game)
-├── camera/          # UI camera and world camera
+├── player/          # The player entity, model, game mode, gravity, collision
+├── camera/          # UI camera, world camera, and the third-person follow
 ├── input/           # Player controls: mouse look, movement, cursor capture
-├── config/          # Settings: window, key bindings
+├── config/          # Settings: window, key bindings, world, player
 ├── window/          # Building the window, and F10/F11 at runtime
+├── world/           # Voxel/chunk data: coordinates, storage, generation
+├── render/          # Turning loaded chunks into what's on screen
 └── utils/           # Small finished helpers with no domain of their own (logging)
 ```
 
@@ -78,6 +89,8 @@ folder, so the tree shows how the states relate.
 For more detail, see the docs folder:
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how the pieces fit together
+- [docs/CONFIG.md](docs/CONFIG.md) — how `config/` is organized, and the
+  conventions every setting in it follows
 - [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md) — why the code is the way it
   is, including decisions that were reversed
 - [docs/AUDIT.md](docs/AUDIT.md) — known improvements that are not done yet

@@ -31,19 +31,26 @@ src/
 │       └── paused/          #     Sub-state: lives inside its parent
 │           ├── mod.rs
 │           └── screen.rs
-├── camera/                  # The camera entities: what they are, how they start
+├── player/                  # The player: its entity, model, game mode, and physics
+│   ├── mod.rs               #   Player, LookAngles, MovementIntent, Flying, PlayerPlugin
+│   ├── game_mode.rs         #   Active mode, F4 toggle, in_creative run condition
+│   ├── physics.rs           #   Gravity, jumping, terrain collision, tests
+│   └── debug.rs             #   F5 noclip toggle (debug builds only)
+├── camera/                  # The camera entities, and the third-person follow
 │   ├── mod.rs               #   CameraPlugin: registers every camera
 │   ├── camera_ui.rs         #   Draws the interface
-│   └── camera_world.rs      #   Renders the world
-├── input/                   # Player controls: what input does to the view
+│   ├── camera_world.rs      #   Renders the world
+│   └── follow.rs            #   Keeps the world camera behind the player, tests
+├── input/                   # Player controls: what input does to the player
 │   ├── mod.rs               #   GameInputPlugin: all gated on Playing
-│   ├── look.rs              #   Mouse -> view rotation, pitch clamp
-│   ├── movement.rs          #   Keys -> flight, axis() + tests
+│   ├── look.rs              #   Mouse -> look angles and body yaw, pitch clamp
+│   ├── movement.rs          #   Keys -> MovementIntent, double-tap gestures, tests
 │   └── cursor.rs            #   Lock/hide the cursor while playing
 ├── config/                  # Every configurable value, grouped by what it configures
 │   ├── window.rs            #   Title, size, borderless, fullscreen, present mode
 │   ├── input.rs             #   Key bindings, sensitivity, speed, sprint mode
-│   ├── camera.rs            #   Field of view
+│   ├── camera.rs            #   Field of view, third-person distance and pivot
+│   ├── player.rs            #   Game mode, gravity, jump, hitbox
 │   ├── world.rs             #   Chunk size, render distance, world height, terrain noise
 │   └── debug.rs             #   TESTING_TOOLS_ENABLED (debug builds only)
 ├── window/                  # Building the window, and changing it at runtime
@@ -95,12 +102,13 @@ submodules, so the sibling style would pair each folder with a file and
 double the tree for no benefit — and because Bevy itself is written this way,
 which keeps our layout and the engine's readable as one.
 
-**Planned** domain modules, each registering its own Bevy `Plugin`:
-`world/` (voxel and chunk data, generation, storage), `render/` (meshing,
-chunk rendering, materials), `player/` (the player's body — physics,
-gravity, collision — and block interaction), `ui/` (HUD, debug overlay).
-Reading movement *intent* from the keys stays in `input/`; `player/` will
-own what that intent does to a body in the world.
+**Planned** domain modules, each registering its own Bevy `Plugin`: `ui/`
+(HUD, debug overlay). Block interaction, when it comes, belongs in
+`player/`. Reading movement *intent* from the keys stays in `input/`, and
+`player/` owns what that intent does to a body in the world.
+Assets live in `assets/` at the crate root, which is where Bevy's asset
+server looks when run through `cargo run` — currently just
+`assets/models/player.glb`.
 
 ## Composition
 
@@ -193,22 +201,49 @@ unexercised before then; if a third camera is ever added, whichever has the
 highest order becomes the UI target unless one is marked
 `IsDefaultUiCamera` explicitly.
 
-`camera/` owns the camera *entities* only — what each camera is and how it
-starts. Nothing in it reads input. The world camera carries a `LookAngles`
-component (its orientation as yaw and pitch, created at spawn from the
-starting view), and `crate::input` steers the camera through that and its
-`WorldCamera` marker, both re-exported from `camera/mod.rs`. The dependency
-runs one way: `input/` depends on `camera/`, never the reverse.
+`camera/` owns the camera entities, plus one runtime behaviour in its own
+file: **`follow.rs`, the third-person view.** Each frame the world camera
+is placed `config::camera::THIRD_PERSON_DISTANCE` back from a pivot at
+`THIRD_PERSON_PIVOT_HEIGHT` above the player's feet, along the player's
+`LookAngles`, and faces the pivot. Looking around therefore swings the
+camera around the player instead of turning it in place, and the player
+stays centred. The maths is the pure `third_person_transform`, covered by
+unit tests: the camera sits directly behind at neutral angles, is always the
+configured distance from the pivot, always faces it, and rises above it when
+looking down. The system runs in `PostUpdate` before
+`TransformSystems::Propagate`, after `input/` has moved and turned the
+player in `Update`, so the camera lands on where the player is this frame
+rather than lagging one behind. It skips itself when neither the player's
+transform nor its look angles changed. There's no camera collision yet, so
+it can clip into terrain behind the player.
+
+Nothing in `camera/` reads input. Dependencies: `camera/` reads `player/`,
+and `input/` writes to `player/`. Neither touches the other.
 
 ## Input
 
 `input/` holds the player's controls — code that *interprets* input every
-frame and applies it to the view. One file per control: `look.rs` (mouse to
-rotation, including the pitch clamp that stops the view flipping over),
-`movement.rs` (held keys to flight, with the pure `axis()` helper and its
-tests), and `cursor.rs` (locking the mouse while playing, which only exists
-so looking works). `GameInputPlugin` registers them, all gated on
-`InGameState::Playing` so pausing freezes the view.
+frame and applies it to the player. One file per control:
+
+- **`look.rs`** turns the mouse into the player's `LookAngles` and turns the
+  body to match. Only yaw reaches the body's transform, so the model never
+  tilts; pitch only moves the camera. It also holds the pitch clamp that
+  stops the view flipping over.
+- **`movement.rs`** turns held keys into the player's `MovementIntent`:
+  which way to walk or fly, at what speed, and whether to jump. It doesn't
+  move anything itself. Forward, back and strafe follow the body's own
+  `forward()`/`right()`, which are always level because the body only has
+  yaw, so walking forward while looking down stays along the ground. It's
+  also where double-taps are read. A double-tap of a movement key sprints.
+  In Creative, a double-tap of Space takes off, and a double-tap of Space
+  while flying rises at double speed while held. A double-tap of Left Shift
+  lands. Each piece is a plain helper with its own tests: `register_taps`,
+  `update_gestures`, `movement_intent`, `axis`.
+- **`cursor.rs`** locks the mouse while playing, which only exists so looking
+  works.
+
+`GameInputPlugin` registers them, all gated on `InGameState::Playing` so
+pausing freezes the player.
 
 What deliberately lives elsewhere:
 
@@ -220,8 +255,98 @@ What deliberately lives elsewhere:
   `window::toggles`. The split is continuous interpretation (here)
   versus a single action triggered by a key (with its target).
 
-When a player body with physics arrives, `input/movement.rs` keeps reading
-intent from the keys and `player/` takes over what that intent does.
+The controls run before `player::PlayerPhysics` each frame, so physics
+acts on this frame's keys.
+
+## Player
+
+`player/` owns the player entity: a `Player` marker, its `LookAngles` (yaw
+and pitch in radians, stored rather than read back from a quaternion so they
+don't drift and pitch clamps cleanly), a `Transform` at its feet, and a
+`WorldAssetRoot` that loads `assets/models/player.glb`. In Bevy 0.19,
+`WorldAssetRoot` is the component formerly called `SceneRoot`. The model is
+a Blockbench export, 2 blocks tall with its origin between the feet. It
+already faces −Z, Bevy's forward, which was checked by reading which side of
+the head the face texture's UVs land on. It goes straight onto the player
+entity with no rotation offset, and Bevy's glTF loader applies no coordinate
+conversion by default. It is spawned on entering `InGame` and despawned on
+leaving, at a fixed `SPAWN_POSITION` above the terrain band, looking toward
+the world origin.
+
+`world/` loads chunks around the player's position, and `render::debug`'s
+chunk grid follows it. Both used to follow the camera. In third person, the
+camera can be in a different chunk from the body it's following.
+
+**`game_mode.rs`: two sets of rules.** `config::player::GameMode` has two
+variants, `Survival` and `Creative`. Those names are placeholders borrowed
+from Minecraft until the game settles on its own. The active one is the
+`ActiveGameMode` resource. It starts at `config::player::INITIAL_GAME_MODE`
+and flips on `F4` (`config::input::TOGGLE_GAME_MODE`) while playing. A
+resource, not a component on the player, because it outlives a visit to a
+world, and systems that never touch the player need it as a run condition.
+`in_creative` is that condition. Every testing-tool key (`world::debug`,
+`render::debug`, `player::debug`) carries it, so those keys do nothing in
+Survival. What they already turned on stays on until you're back in
+Creative to turn it off. The debug state-jump keys (`1`–`3`) are left
+alone, since `3` is still the only way into a world at all. Switching mode
+also resets flight (always off in Survival, and
+`config::player::CREATIVE_STARTS_FLYING` — default `false` — in Creative)
+and re-enables collision unconditionally, so leaving Creative with it
+switched off (see `player::debug` below) can never strand the player
+noclipping through Survival.
+
+**`physics.rs`: gravity and terrain.** Each frame while playing, the player
+moves by its `MovementIntent`:
+
+- **On foot:** gravity (`config::player::GRAVITY`, capped at
+  `TERMINAL_VELOCITY`) pulls it down, and a jump sets its upward speed to
+  `JUMP_SPEED`, but only from the ground.
+- **Flying** (`Flying`, Creative only): vertical speed comes straight from
+  the intent and there's no gravity.
+
+The player is a box, `HITBOX_WIDTH` by `HITBOX_HEIGHT`, standing on its
+`Transform`. It moves one axis at a time, vertical first, and an axis that
+would push it into a solid block stops flush against that block instead.
+That per-axis rule is what makes it slide along walls rather than sticking.
+Moves are split into steps of under one block, so a fast fall or a slow
+frame can't tunnel through a one-block floor. Solidity comes from
+`world::LoadedChunks::is_solid`, which covers three cases:
+
+- **Outside the world's vertical extent:** air, so the space above the
+  world's top stays flyable.
+- **An ungenerated chunk inside the world:** solid. Generation is async, so
+  the player waits for a chunk rather than falling through ground that
+  hasn't arrived. A player whose box already overlaps such a chunk is
+  "stuck" and doesn't move at all until it loads.
+- **A loaded block:** its actual contents.
+
+`CollisionEnabled`, a resource, gates all of this at once — see
+`player::debug` below. Off, a frame's `MovementIntent` is applied to the
+`Transform` directly, with no block checks at all: noclip.
+
+The collision maths is plain functions over an "is this block solid"
+callback (`move_and_collide`, `move_axis`, `overlaps_solid`), unit-tested
+without a world. `Motion`, the physics state carried between frames, also
+tracks whether the *last* move was stopped by a wall — `x`/`z` only, never
+`y`, since landing blocks that axis every frame while walking on flat ground
+and must never read as a wall hit. `input::movement` reads that flag to
+cancel a sticky `SprintMode::DoubleTap` sprint the frame after a collision
+(`config::player::RESET_SPRINT_ON_COLLISION`): running into a block and
+jumping over it, still holding the movement key throughout, would otherwise
+keep the old sprint engaged forever, since it only turns off on its own when
+every movement key is released. Standing still on the ground, or hovering in
+flight, skips the system before it touches `Transform`. That matters beyond
+the saved work: chunk loading and the camera follow both run only when the
+player's `Transform` changes, so an idle player keeps all three idle.
+
+**`player/debug.rs` (debug builds only): noclip.** One hotkey,
+`F5`/`config::input::TOGGLE_COLLISION`, flips `CollisionEnabled`. Same shape
+as `world::debug` and `render::debug` — `TESTING_TOOLS_ENABLED`-gated
+registration, plus `in_creative` on the hotkey itself, plus an
+`_INITIALLY_*` constant (`config::debug::COLLISION_INITIALLY_DISABLED`)
+guarded the same way `CHUNK_LOCK_INITIALLY_ENGAGED` is: only takes effect
+alongside `TESTING_TOOLS_ENABLED`, so collision can never start disabled
+with no hotkey able to turn it back on.
 
 Draw order is the one contract between them: the UI sits above the world.
 
@@ -294,9 +419,12 @@ to leave fullscreen should not depend on where the player is in the game.
 `config/` is the single answer to "where do I change a setting?". It holds
 plain values only, grouped by what they configure — `window.rs` for the
 window, `input.rs` for controls, `camera.rs` for the camera, `world.rs` for
-world generation and layout, `debug.rs` for testing-only toggles — and
-adding a category later (graphics, audio) means adding a file, not making a
-decision.
+world generation and layout, `player.rs` for game mode and physics,
+`debug.rs` for testing-only toggles — and adding a category later (graphics,
+audio) means adding a file, not making a decision. See
+[`docs/CONFIG.md`](CONFIG.md) for the conventions every file in it follows
+(the settings-surface enum pattern, the two-gate debug pattern) in more
+depth than fits here.
 
 Nothing in `config/` knows about the engine beyond the types a value needs.
 Turning values into engine settings belongs to whoever consumes them.
@@ -330,6 +458,11 @@ the feature.
 `1` while vertical loading is new — see World's `mod.rs` paragraph) and the
 terrain-noise tuning constants `generation.rs` reads. All of it is read by
 `world/`; see the World section below.
+
+`config::player` holds `GameMode` and its starting value, gravity, jump
+speed, terminal velocity, the hitbox, and `RESET_SPRINT_ON_COLLISION` —
+everything `player/` reads to decide how the player moves and collides. See
+the Player section below.
 
 Bindings are settings and live here; interpreting them is behaviour and
 lives in `input/`. When action mapping, rebinding, or gamepad support arrive,
@@ -631,12 +764,12 @@ this exists in the schedule at all.
   crashing, so this is safe to leave configured even if it's ever run on
   hardware that can't do it.
 - **The chunk-bounds grid** (`F7` to cycle, `Alt+F7` to lock) draws a
-  gizmo cube around whichever chunk the camera is currently in, in one of
+  gizmo cube around whichever chunk the player is currently in, in one of
   three modes owned by `config::debug::ChunkGridMode` (`None`, `Outline`,
   `OutlineAndAxes` — the outline, a line through the centre along each
   axis, and a matching "+" on each of the six faces, so the cube reads as
   eight sub-cubes). Locking (`ChunkGridLock`) freezes
-  the grid on its current chunk instead of following the camera, the same
+  the grid on its current chunk instead of following the player, the same
   idea as `world::ChunkLock` freezing loading — both share the shape "press
   a key, something stops updating with the player's movement until pressed
   again." `F7` and `Alt+F7` share one physical key because they're the same

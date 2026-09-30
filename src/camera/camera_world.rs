@@ -4,13 +4,17 @@
 //! entering [`GameState::InGame`] and despawned on leaving, so no 3D view is
 //! rendered while the player is in a menu.
 //!
-//! This module owns the camera *entity* — what it is and how it starts. What
-//! the player's input does to it (looking, flying, capturing the mouse) lives
-//! in [`crate::input`], which depends on this module and never the reverse.
+//! This module owns the camera *entity* — what it is and how it starts. Where
+//! it sits each frame is [`super::follow`]'s job: a third-person view behind
+//! the player. What the player's input does (looking, moving, capturing the
+//! mouse) lives in [`crate::input`], which acts on the player, not on this
+//! camera.
 
 use bevy::prelude::*;
 use bevy::render::view::Msaa;
+use bevy::transform::TransformSystems;
 
+use super::follow::follow_player;
 // Aliased: inside `crate::camera`, a bare `camera::` would read as this
 // module rather than `crate::config::camera`.
 use crate::config::camera as config;
@@ -20,55 +24,33 @@ use crate::states::GameState;
 #[derive(Component)]
 pub struct WorldCamera;
 
-/// The camera's orientation as accumulated look angles, in radians.
-///
-/// Stored rather than read back from the transform: recovering Euler angles
-/// from a quaternion every frame is lossy and drifts, and it makes clamping
-/// pitch awkward. Spawned with the camera, so it always matches the starting
-/// view; [`crate::input`] updates it from the mouse.
-#[derive(Component, Default)]
-pub struct LookAngles {
-    /// Rotation around the vertical axis. Unbounded — it wraps naturally.
-    pub yaw: f32,
-    /// Rotation around the horizontal axis. Kept just short of straight up
-    /// and down by the look control, so the view can never flip over.
-    pub pitch: f32,
-}
-
 /// Draw order for the world camera.
 ///
 /// Lower than the UI camera's, so the interface renders on top of the world.
 const ORDER: isize = 0;
 
-/// Where the camera starts, looking back at the origin.
-///
-/// The `y` matters more than it looks: `world::generation`'s terrain never
-/// rises more than `config::world::TERRAIN_AMPLITUDE` blocks above sea
-/// level (absolute world height `0`), so `15` sits comfortably above the
-/// highest the surface can reach near the origin without floating needlessly
-/// high above it. Still a constant, not derived from the world — real spawn
-/// placement (finding the actual surface at this column) is later work, see
-/// `docs/AUDIT.md`.
-const START_POSITION: Vec3 = Vec3::new(8.0, 15.0, 16.0);
-
-/// Spawns the world camera with each world, and removes it afterwards.
+/// Spawns the world camera with each world, keeps it behind the player, and
+/// removes it afterwards.
 pub struct WorldCameraPlugin;
 
 impl Plugin for WorldCameraPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(GameState::InGame), spawn_world_camera)
-            .add_systems(OnExit(GameState::InGame), despawn_world_camera);
+            .add_systems(OnExit(GameState::InGame), despawn_world_camera)
+            // `PostUpdate`, before transforms propagate: the player has
+            // already moved and turned this frame (in `Update`), so the
+            // camera lands on where the player *is*, not where it was a
+            // frame ago. A frame of lag here reads as jitter.
+            .add_systems(
+                PostUpdate,
+                follow_player
+                    .before(TransformSystems::Propagate)
+                    .run_if(in_state(GameState::InGame)),
+            );
     }
 }
 
 fn spawn_world_camera(mut commands: Commands) {
-    let transform = Transform::from_translation(START_POSITION).looking_at(Vec3::ZERO, Vec3::Y);
-
-    // Recover the starting angles from the initial look-at so the first
-    // mouse movement continues from where the camera is pointing instead of
-    // snapping.
-    let (yaw, pitch, _) = transform.rotation.to_euler(EulerRot::YXZ);
-
     commands.spawn((
         Camera3d::default(),
         Camera {
@@ -85,8 +67,9 @@ fn spawn_world_camera(mut commands: Commands) {
         }),
         // Geometry edges genuinely alias here, unlike on the UI camera.
         Msaa::Sample4,
-        transform,
-        LookAngles { yaw, pitch },
+        // No starting transform worth choosing: `follow_player` places the
+        // camera behind the player before the first frame renders.
+        Transform::default(),
         WorldCamera,
     ));
 }

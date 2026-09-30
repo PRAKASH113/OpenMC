@@ -15,6 +15,10 @@
 /// a testing hotkey does nothing at all — the system behind it is never
 /// even added to the schedule, not merely skipped. Set it to `true` while
 /// deliberately using a testing feature, back to `false` once done.
+///
+/// Even when `true`, the hotkeys only work in
+/// [`crate::config::player::GameMode::Creative`]. Survival is meant to play
+/// the way the game will ship.
 #[cfg(debug_assertions)]
 pub const TESTING_TOOLS_ENABLED: bool = true;
 
@@ -40,8 +44,8 @@ pub const CHUNK_LOCK_INITIALLY_ENGAGED: bool = false;
 #[cfg(debug_assertions)]
 pub const WIREFRAME_INITIALLY_VISIBLE: bool = false;
 
-/// The chunk-bounds grid (`render::debug`) `render::debug` can draw around
-/// whichever chunk the camera is in.
+/// The chunk-bounds grid `render::debug` can draw around whichever chunk the
+/// player is in.
 ///
 /// A settings-surface enum like [`crate::config::input::SprintMode`]: the
 /// type lives here, as a value someone would tune; the behaviour of
@@ -54,8 +58,8 @@ pub enum ChunkGridMode {
     None,
     /// A wireframe cube around the chunk's bounds.
     Outline,
-    /// The outline, plus a line through the centre along each axis, to find
-    /// the middle at a glance.
+    /// The outline, plus a line through the centre along each axis and a
+    /// matching "+" on every face, so the cube reads as eight sub-cubes.
     OutlineAndAxes,
 }
 
@@ -67,14 +71,14 @@ pub enum ChunkGridMode {
 pub const CHUNK_GRID_INITIAL_MODE: ChunkGridMode = ChunkGridMode::None;
 
 /// Whether the chunk-bounds grid (`render::debug`) starts locked to
-/// whichever chunk the camera is in the moment a world loads, rather than
+/// whichever chunk the player is in the moment a world loads, rather than
 /// needing [`crate::config::input::DEBUG_MODIFIER`] +
 /// [`crate::config::input::TOGGLE_CHUNK_GRID`] pressed first.
 ///
 /// Unlike the other `_INITIALLY_*` constants here, this can't simply be a
 /// resource's `Default` — locking needs an actual chunk position, and none
-/// exists until the world camera has spawned. `render::debug` applies it
-/// the first frame a camera exists after entering `GameState::InGame`,
+/// exists until the player has spawned. `render::debug` applies it the
+/// first frame a player exists after entering `GameState::InGame`,
 /// which in practice means once, the first time `InGame` is ever entered
 /// this run — leaving and re-entering later doesn't re-lock. Good enough
 /// for a testing convenience; press the hotkey again if you need it back.
@@ -88,3 +92,13 @@ pub const CHUNK_GRID_INITIALLY_LOCKED: bool = false;
 /// here.
 #[cfg(debug_assertions)]
 pub const SEA_LEVEL_LINE_INITIALLY_VISIBLE: bool = false;
+
+/// Whether the player passes straight through terrain (`player::debug`) from
+/// the start, rather than needing
+/// [`crate::config::input::TOGGLE_COLLISION`] pressed first. Same
+/// `TESTING_TOOLS_ENABLED` reasoning as the other `_INITIALLY_*` constants
+/// here — and, like every testing hotkey, only ever takes effect in
+/// [`crate::config::player::GameMode::Creative`]; entering Survival always
+/// re-enables collision regardless of this constant or the hotkey.
+#[cfg(debug_assertions)]
+pub const COLLISION_INITIALLY_DISABLED: bool = false;

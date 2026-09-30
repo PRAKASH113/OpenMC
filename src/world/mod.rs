@@ -39,10 +39,10 @@ use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 pub(crate) use block::Block;
 pub(crate) use chunk::{Chunk, ChunkPos};
 
-use crate::camera::WorldCamera;
 // Aliased: inside `crate::world`, a bare `world::` would read as this module
 // rather than `crate::config::world`.
 use crate::config::world as config;
+use crate::player::Player;
 use crate::states::GameState;
 
 /// Fired the frame a chunk is generated and inserted into [`LoadedChunks`].
@@ -73,6 +73,34 @@ impl LoadedChunks {
     /// The chunk at `pos`, if it is currently loaded.
     pub(crate) fn chunk(&self, pos: ChunkPos) -> Option<&Chunk> {
         self.chunks.get(&pos)
+    }
+
+    /// Whether the block at integer world coordinate `block` stops the player,
+    /// for collision.
+    ///
+    /// Three cases, not two:
+    /// - **Outside the world's vertical extent** (above
+    ///   `CHUNKS_ABOVE_SEA_LEVEL` or below `CHUNKS_BELOW_SEA_LEVEL`): not
+    ///   solid. Those chunks are never generated, and the space above the
+    ///   world's top has to be flyable.
+    /// - **Inside it but not loaded yet**: solid. Generation is async, so a
+    ///   player can reach a chunk before its data exists. Treating it as a
+    ///   wall means they wait for it instead of falling through ground that
+    ///   hasn't arrived.
+    /// - **Loaded**: whatever the block actually is.
+    pub(crate) fn is_solid(&self, block: IVec3) -> bool {
+        let (chunk_pos, local) = ChunkPos::of_block(block);
+        if !in_vertical_range(
+            chunk_pos.y,
+            config::CHUNKS_ABOVE_SEA_LEVEL,
+            config::CHUNKS_BELOW_SEA_LEVEL,
+        ) {
+            return false;
+        }
+        match self.chunks.get(&chunk_pos) {
+            Some(chunk) => chunk.block(local) == Block::Solid,
+            None => true,
+        }
     }
 
     /// Every currently-loaded chunk's position, in no particular order.
@@ -226,20 +254,24 @@ fn in_vertical_range(y: i32, above: u32, below: u32) -> bool {
 /// Dropping a still-running [`Task`] cancels it — there's no point letting a
 /// chunk finish generating for a position the player has already left.
 ///
-/// `Changed<Transform>` on the query, not just `With<WorldCamera>`: if the
-/// camera hasn't moved, its chunk can't have changed, so there's nothing to
-/// load or evict. This is what makes the system free while `Paused` — the
-/// only systems that ever write to the camera's `Transform` are gated on
+/// `Changed<Transform>` on the query, not just `With<Player>`: if the player
+/// hasn't moved, their chunk can't have changed, so there's nothing to load
+/// or evict. This is what makes the system free while `Paused` — the only
+/// systems that ever write to the player's `Transform` are gated on
 /// `Playing`, so it genuinely never changes while paused — and free while
-/// standing still. It doesn't distinguish moving from just looking around,
-/// since both touch the same `Transform`; that's a coarser saving than a
+/// standing still. It doesn't distinguish moving from turning, since
+/// turning rotates the same `Transform`; that's a coarser saving than a
 /// hand-rolled "did the chunk actually change" check would give, but it's
 /// the query filter `CLAUDE.md` asks for reached for first.
+///
+/// The player, not the camera: in third person the camera sits several
+/// blocks behind the player and can be in a different chunk. What should
+/// load is what's around the body walking through the world.
 fn load_chunks_around_player(
     mut world: ResMut<LoadedChunks>,
     mut pending: ResMut<PendingChunks>,
     mut unloaded: MessageWriter<ChunkUnloaded>,
-    player: Query<&Transform, (With<WorldCamera>, Changed<Transform>)>,
+    player: Query<&Transform, (With<Player>, Changed<Transform>)>,
 ) {
     let Ok(transform) = player.single() else {
         return;
@@ -381,5 +413,27 @@ mod tests {
         assert!(!in_vertical_range(20, 20, 12));
         assert!(in_vertical_range(-12, 20, 12));
         assert!(!in_vertical_range(-13, 20, 12));
+    }
+
+    #[test]
+    fn an_unloaded_chunk_inside_the_world_counts_as_solid() {
+        assert!(LoadedChunks::default().is_solid(IVec3::ZERO));
+    }
+
+    #[test]
+    fn above_the_worlds_top_is_never_solid() {
+        let top = (config::CHUNKS_ABOVE_SEA_LEVEL * config::CHUNK_SIZE) as i32;
+        assert!(!LoadedChunks::default().is_solid(IVec3::new(0, top, 0)));
+    }
+
+    #[test]
+    fn a_loaded_chunk_answers_from_its_own_blocks() {
+        let mut world = LoadedChunks::default();
+        let mut chunk = Chunk::empty();
+        chunk.set_block(UVec3::new(1, 2, 3), Block::Solid);
+        world.insert(pos(0, 0, 0), chunk);
+
+        assert!(world.is_solid(IVec3::new(1, 2, 3)));
+        assert!(!world.is_solid(IVec3::new(1, 3, 3)));
     }
 }

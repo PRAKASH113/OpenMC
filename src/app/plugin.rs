@@ -8,6 +8,7 @@ use bevy::render::settings::{RenderCreation, WgpuFeatures, WgpuSettings};
 
 use crate::camera::CameraPlugin;
 use crate::input::GameInputPlugin;
+use crate::player::PlayerPlugin;
 use crate::render::RenderPlugin;
 use crate::states::GameStatePlugin;
 use crate::utils::log::log_plugin;
@@ -78,6 +79,7 @@ impl Plugin for AppPlugin {
         // and never the reverse, so this list reads in the same direction.
         app.add_plugins((
             GameStatePlugin,
+            PlayerPlugin,
             CameraPlugin,
             GameInputPlugin,
             WindowControlPlugin,

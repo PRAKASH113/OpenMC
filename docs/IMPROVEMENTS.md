@@ -73,8 +73,11 @@ Last reviewed in full: audit #2, 2026-09-26.
 
 | Decision | Why |
 | --- | --- |
-| `camera/` owns camera entities only; `input/` steers them through `WorldCamera` and `LookAngles` | Dependencies run one way, `input/` -> `camera/`. |
+| `camera/` owns camera entities only; `input/` steers the *player*, and the world camera follows it (`camera::follow`), never the reverse | `LookAngles` moved to `player/` when third person arrived — the camera no longer has its own orientation, it derives one from the player's. Dependencies run one way: `input/` writes `player/`, `camera/` reads it. See 2026-09-29. |
 | The UI camera is spawned at `Startup` and lives for the whole run; the world camera is spawned and despawned with `GameState::InGame` | State screens spawn only their own content and never contend over the view; nothing 3D renders in menus. |
+| The world camera has no starting transform of its own; `camera::follow` places it before the first frame renders | Choosing a starting position for a camera that immediately gets overwritten would just be a second place to keep in sync with the player's. |
+| Third person orbits a pivot at `config::camera::THIRD_PERSON_PIVOT_HEIGHT` above the player's feet, `THIRD_PERSON_DISTANCE` back along the player's own look angles, always facing the pivot | The standard third-person shape (Minecraft's own values: distance 4). Orbiting the *player's* angles, not a separate camera rotation, is what keeps the player centred as the view turns. See 2026-09-29. |
+| The camera-follow system runs in `PostUpdate`, before `TransformSystems::Propagate`, gated on `Changed` player transform/look angles | Placing it after `input/`'s `Update` systems means it reads this frame's player position, not last frame's — a frame of lag here reads as jitter. The change-detection gate is what lets an idle player leave the camera untouched too. |
 | Draw order: world camera `0`, UI camera `1` | The UI renders on top by construction. With no `IsDefaultUiCamera` marker, Bevy routes UI to the highest-order camera — mark one explicitly if a third camera is ever added. |
 | UI camera `Msaa::Off`; world camera `Msaa::Sample4` | UI quads and font-atlas text gain nothing from multisampling; a 4x UI target would be pure cost. Do not "fix" the mismatch by matching MSAA — see the next row. |
 | The UI camera clears its own texture to transparent (`ClearColorConfig::Custom(Color::NONE)`) and composites onto the window with `PREMULTIPLIED_ALPHA_BLENDING` | Because of the MSAA mismatch it renders into its own intermediate texture, so it must clear or every frame's UI piles onto the last. **Never** set it back to `ClearColorConfig::None`. |
@@ -100,6 +103,32 @@ Last reviewed in full: audit #2, 2026-09-26.
 | Sprint is chosen by the compile-time `SPRINT_MODE`: `DoubleTap` (default) or `Hold` (`SPRINT_HOLD_KEY`, Left Ctrl) | Both styles exist; switching is a config edit and rebuild, not a runtime menu. The `#[allow(dead_code)]` on `SprintMode` is intentional — one variant is always unconstructed. |
 | `DoubleTap`: the *same* W/A/S/D key twice within `DOUBLE_TAP_WINDOW` (0.3 s); sprint stays on until every movement key is released | Minecraft's feel — no re-triggering on every direction change. |
 | No cursor re-grab on focus, no focus request after F10/F11, no Escape debounce | Each was added for a theory the logs disproved during the 2026-09-26 overlay bug, and removed. Re-add only with evidence (for example, logged `WindowFocused` loss). |
+| `input/movement.rs` only writes `MovementIntent`; it never touches `Transform` itself | Separates "what the keys ask for" from "what actually happens" — `player::physics` decides that, since a wall or the ground can override intent. Also what lets both be unit-tested independently. |
+| Space and Left Shift double-taps (take off, fast ascent, land) share `DOUBLE_TAP_WINDOW` and the same tap-tracking machinery as sprint, across all six movement/vertical keys at once | One completed double-tap clears the record outright, so a third tap starts a fresh pair instead of chaining — tapping Space three times takes off once, not "take off, then fast ascent". Reusing sprint's timing constant means one setting tunes the feel of every double-tap in the game, not several that could drift apart. |
+
+### Player
+
+| Decision | Why |
+| --- | --- |
+| The player is its own entity (`player::Player`), separate from either camera, carrying `LookAngles`, `MovementIntent`, `Flying`, and its physics state | Third person needs a body the camera can stand behind — the camera *is* the player was only ever true in first person. `world/` and the debug chunk grid load around the player now, not the camera, since in third person they can be in different chunks. |
+| The player model is a glTF (`assets/models/player.glb`, a Blockbench export) loaded with Bevy 0.19's `WorldAssetRoot` (`GltfAssetLabel::Scene(0)`) | Requested: a real model instead of the bare camera. `WorldAssetRoot` is what `SceneRoot` became in this Bevy version — confirmed from `bevy_gltf`/`bevy_world_serialization` source, not assumed. |
+| The model needs no rotation offset: it already faces −Z, matching `Transform::forward` | Checked by decoding the glTF's own UV data and confirming the head's face texture sits on the −Z-normal face, not assumed from the file looking roughly humanoid. |
+| Only yaw reaches the player's `Transform`; pitch only moves the camera | The model must stay upright looking up or down. `input::look` writes both angles to `LookAngles` but rotates the body by yaw alone. |
+| Movement, gravity, and collision act on the player's own `right()`/`forward()`, which are level because of the yaw-only rule above | Walking forward while looking down stays along the ground instead of driving into it — no separate "flatten this vector" step needed anywhere. |
+| Two game modes (`config::player::GameMode`), Survival and Creative, chosen by an `ActiveGameMode` resource and switched with `F4` | Requested, with Minecraft's names kept only as placeholders until the game has its own. A resource, not a player component, since mode outlives any one world and systems that never touch the player (every testing-tool key) need to read it as a run condition (`in_creative`). |
+| Every testing-tool hotkey (`world::debug`, `render::debug`) is additionally gated on `in_creative` | Requested: Survival should play the way the game ships; debug tools are a Creative-only convenience layered on top of the existing `TESTING_TOOLS_ENABLED` gate, not a replacement for it. |
+| Flight exists only in Creative, toggled by double-tapping Space (take off) or Left Shift (land), tracked as a plain `Flying(bool)` component | Requested. A component, not folded into `MovementIntent`, because it's state that persists across frames (am I currently flying) rather than a per-frame ask. Switching game mode resets it — off in Survival unconditionally, `CREATIVE_STARTS_FLYING` in Creative — so a mode swap can never leave the player flying somewhere flight isn't supposed to exist. |
+| Gravity, jump speed, terminal velocity, and the hitbox are plain constants in `config::player`, not derived from the model | Same reasoning as every other `config/` value — a tunable someone would actually reach for. The hitbox (0.6 wide, 1.9 tall) is deliberately narrower and shorter than the 2-block model, the same relationship Minecraft's 0.6-wide hitbox has to its own taller model, so the player fits through gaps the model's own silhouette wouldn't. |
+| Collision moves the player one axis at a time (vertical first), each axis stopping flush against the first solid block rather than the whole move being cancelled | Per-axis is what makes sliding along a wall possible — a blocked horizontal axis doesn't also cancel a still-open vertical one (or the other horizontal one). Vertical first settles landing before any sliding, so walking along the ground never snags on the block being stood on. |
+| A move is split into sub-steps under one block long | Stops a fast fall or a long low-framerate step from tunnelling clean through a one-block-thick floor. |
+| `LoadedChunks::is_solid` treats an *ungenerated* chunk inside the world's vertical extent as solid, and anything outside that extent as air | Generation is async, so a player can physically reach a chunk before its data exists — treating that as solid ground (rather than open air to fall through) means they wait for it instead of falling through terrain that just hasn't arrived yet. Outside the configured world height has to stay flyable regardless, or a tall enough fall or flight ceiling would hit an invisible floor. |
+| The collision maths (`move_and_collide`, `move_axis`, `overlaps_solid`) is plain functions over an `is_solid: impl Fn(IVec3) -> bool` closure | Unit-tested directly against hand-written "is this block solid" functions, no `World` or chunk data needed — the same reasoning `world::generation::generate` was built as a pure function for. |
+| Standing still on the ground (or hovering while flying) returns from `apply_physics` before touching `Transform` at all | Beyond the saved work, this is what keeps chunk loading and the camera follow idle too — both are gated on `Changed<Transform>`, so an idle player keeps every system downstream of its position idle as well. |
+| Player spawn is still a fixed constant (`player::SPAWN_POSITION`), not the real terrain surface | Unchanged from the world-camera version; genuinely needs solving once there's gravity to fall under, so it's `AUDIT.md` 4.8, not deferred indefinitely. |
+| `Motion` tracks whether the *last* move was stopped on `x`/`z`, never `y`, as its own field (`horizontal_collision`) rather than deriving it ad hoc from `Moved` where it's consumed | `y` is blocked every frame while walking on flat ground (that's landing, not a wall) — folding vertical in would misfire constantly. Keeping it on `Motion`, read via a `pub(crate)` accessor, is what lets `input::movement` (a different top-level module) see it without `physics`'s internals becoming any more public than that one fact. |
+| A `SprintMode::DoubleTap` sprint cancels itself the frame after a horizontal collision (`config::player::RESET_SPRINT_ON_COLLISION`, default `true`) | Requested: running into a block and jumping over it, still holding the movement key throughout, otherwise keeps the old sprint engaged the whole way — it never gets the *only* other way sprint turns off (every movement key released). A config flag because it's a judgment call about feel, not a fixed rule. The reset logic (`cancel_sprint_on_collision`) is a one-line pure function specifically so it's unit-tested directly rather than only reachable through the full ECS system. |
+| Terrain collision can be switched off entirely (`player::physics::CollisionEnabled`, a resource) via a debug hotkey (`F5`/`TOGGLE_COLLISION`) | Requested: a noclip toggle for testing, in Creative only — same shape as every other testing feature (`TESTING_TOOLS_ENABLED` + `in_creative` + an `_INITIALLY_*` constant guarded by both). Off, physics applies a frame's raw delta straight to `Transform` with no block checks; `grounded` and the collision-tracking flag both go false rather than keep a stale value from before it was switched off. |
+| Switching game mode (`game_mode::toggle_game_mode`) unconditionally re-enables collision, regardless of what the hotkey or `COLLISION_INITIALLY_DISABLED` last left it at | Leaving Creative with collision off must never strand the player noclipping through Survival, and re-entering Creative should start from a clean state rather than remembering a previous testing session. Same reasoning `Flying`'s reset on mode switch already used. |
 
 ### World
 
@@ -122,6 +151,7 @@ Last reviewed in full: audit #2, 2026-09-26.
 | Terrain is a heightmap from `noise::Fbm<Perlin>`, sampled in *world* space, not chunk-local space, centred on sea level (absolute world height `0`) and bounded by `TERRAIN_AMPLITUDE` in either direction | World-space sampling is what makes neighbouring chunks' terrain line up at the seam — chunk-local sampling would make every chunk look like its own island regardless of neighbours. The amplitude bound is what makes a chunk fully outside the band trivial to generate (solid or air, no noise sampled), which matters increasingly as `CHUNKS_ABOVE_SEA_LEVEL`/`_BELOW_SEA_LEVEL` grow. See 2026-09-27 (2). |
 | The guaranteed-solid band below `-TERRAIN_AMPLITUDE` (or a chunk's own bottom, whichever is higher) is bulk-filled with `Chunk::fill_below_height`; only the band a column's height might actually land in is set block-by-block | Keeps the audit #2 1.1 contiguous-fill optimisation meaningfully alive now that terrain isn't flat, instead of falling back to a per-block loop for the whole chunk. |
 | `ChunkPos::face_neighbors` returns the six chunks sharing a face with this one, order unspecified | One place both `render/`'s padding lookup and its re-mesh-on-load trigger get "which chunks touch this one" from, rather than each recomputing offsets separately. |
+| `ChunkPos::of_block` splits an integer world position into its chunk and local coordinate with Euclidean (not truncating) division | Same reasoning as `ChunkPos::containing`'s floor division: block `-1` has to land as the last block of chunk `-1`, not the first of chunk `0`. Added for `player::physics`' block-solidity lookups, which query arbitrary world positions rather than a chunk's own local range. |
 
 ### Testing tools (`config::debug`, `*::debug`)
 
@@ -1469,6 +1499,173 @@ world camera has. Today that's only `DefaultGizmoConfigGroup`, set here.
 was doing for no benefit. Correctness: `cargo fmt`, `clippy -- -D
 warnings`, `test` (35 pass), and a boot run (no warnings or errors) all
 clean. The on-screen result still needs the user's own confirmation.*
+
+### 2026-09-29
+
+**A player entity, a third-person camera, and (same request, split across
+the turn) gravity, terrain collision, and two game modes.**
+
+**The player.** Until now the "player" was the world camera itself —
+`camera_world.rs` held `WorldCamera`, `LookAngles`, and the starting
+position, and `input/` steered the camera directly. Requested: an actual
+player body (`assets/Player.glb`, a Blockbench model) in third person. New
+`player/` module: a `Player` entity carrying `LookAngles` (moved here from
+the camera), a `Transform`, and a `WorldAssetRoot` loading the model —
+`WorldAssetRoot` because that's what `SceneRoot` is called in this Bevy
+version; confirmed from `bevy_gltf`'s and `bevy_world_serialization`'s own
+source rather than guessed from a possibly-stale mental model of the API.
+The model needed no rotation offset: decoding its glTF UV data directly (not
+assumed from eyeballing the mesh) showed the head's face texture on the
+−Z-normal face, which already matches `Transform::forward`. `input::look`
+now writes both look angles onto the player and turns its body by yaw only,
+never pitch, so the model stays upright at any camera angle; `input::
+movement` now moves the player instead of the camera, along its own level
+`right()`/`forward()`. `world::load_chunks_around_player` and the debug
+chunk grid both switched from following the camera to following the player
+— in third person they can be several blocks apart, in different chunks.
+
+**Third person.** `camera::follow` (new) places the world camera each frame:
+`config::camera::THIRD_PERSON_DISTANCE` back from a pivot at
+`THIRD_PERSON_PIVOT_HEIGHT` above the player's feet, along the player's own
+`LookAngles`, always facing the pivot — so looking around orbits the camera
+around the player rather than turning it in place, and the player stays
+centred. Runs in `PostUpdate`, before `TransformSystems::Propagate`, after
+`input/`'s `Update` systems have moved the player, so the camera reads this
+frame's position rather than lagging one frame behind; gated on `Changed`
+player transform/angles, so an idle player leaves it untouched. The
+placement itself is the pure, unit-tested `third_person_transform` —
+covered directly rather than through the ECS, the same pattern
+`world::generation::generate` and `player::physics`' collision use.
+
+**Gravity and collision.** The player is now a box
+(`config::player::HITBOX_WIDTH`/`HITBOX_HEIGHT`) that gravity pulls down
+(`GRAVITY`, capped at `TERMINAL_VELOCITY`) and a jump (`JUMP_SPEED`, ground
+only) pushes up, unless flying. It moves one axis at a time — vertical
+first, so landing settles before any sliding — and an axis that would push
+it into a solid block stops flush against that block instead of cancelling
+the whole move, which is what lets it slide along a wall rather than stick
+to it. Moves are capped under one block per step so a fast fall can't
+tunnel through a thin floor. Solidity comes from the new
+`LoadedChunks::is_solid`, which treats an *ungenerated* chunk inside the
+world's configured height as solid (generation is async, so a player can
+reach a chunk before its data exists; treating the gap as solid means they
+wait for it rather than falling through) and anything outside that height as
+air (so the space above the world stays flyable). All of this — the
+per-axis stepping, the sub-block stepping, the three solidity cases — is
+plain functions over an `is_solid` closure, tested directly against
+hand-written solid/air functions, needing no `LoadedChunks` or `App` at all.
+An idle, grounded (or idle, flying) player returns before touching
+`Transform`, which is what keeps chunk loading and the camera follow idle
+alongside it, not just physics itself.
+
+**Two game modes.** `config::player::GameMode` (`Survival`/`Creative` —
+Minecraft's names, kept only as placeholders) is read from a new
+`ActiveGameMode` resource, starting in Survival and switched with `F4`.
+Every existing testing-tool hotkey (`world::debug`'s chunk lock,
+`render::debug`'s wireframe/chunk-grid/sea-level toggles) is now also gated
+on `in_creative`, a run condition reading that resource — layered on top of
+the existing `TESTING_TOOLS_ENABLED` gate, not replacing it. Flight exists
+only in Creative: double-tapping Space takes off, double-tapping it again
+while flying engages a double-speed ascent for as long as it's held
+(`FAST_ASCENT_MULTIPLIER`), and double-tapping Left Shift lands. A plain
+`Flying(bool)` component, not part of `MovementIntent`, since it's state
+that persists across frames rather than a per-frame ask; switching mode
+resets it unconditionally (off in Survival, `CREATIVE_STARTS_FLYING` in
+Creative) so a mode swap can never strand the player flying somewhere
+flight isn't supposed to exist. All the double-tap gestures — sprint, take
+off, fast ascent, land — share one tap-tracking pass over all six
+movement/vertical keys and `DOUBLE_TAP_WINDOW`'s timing, with a completed
+double-tap clearing the record so a third tap starts a fresh pair rather
+than chaining onto the pair before it.
+
+`input::movement` no longer touches `Transform` at all — it only writes the
+player's `MovementIntent` (a level horizontal velocity, a vertical one for
+flight, and whether a jump was asked for). `player::physics` is what turns
+that into an actual position, deciding what the ground, a jump, or a wall
+allow. Splitting "what the keys ask for" from "what actually happens" is
+what makes each side testable without the other: `movement`'s tests check
+the intent a given key combination produces, `physics`'s check what a given
+intent and terrain layout do to a position, and neither needs the other to
+exist.
+
+*Perf: physics and camera-follow both return early whenever the player is
+idle, before writing `Transform` — the same "skip it outright" shape
+`CLAUDE.md` asks for, and the reason an idle player costs chunk loading,
+camera placement, and physics all in one shot rather than three separate
+checks. The collision box's per-step sub-division is bounded (`MAX_STEP`
+per step) so a fast fall costs a handful of iterations, not one per block
+fallen. Readability: `world/` and the debug grid following the player
+instead of the camera fixes a latent inaccuracy third person would have
+otherwise introduced silently — audit item 3.3 flagged this exact
+"finds the player through the camera" coupling before third person made it
+actually wrong, not just imprecise. Modularity: `player/` now owns
+everything about the player's own state and rules (mode, physics, model);
+`camera/` only reads it, `input/` only writes to it, neither depends on the
+other. Correctness: `cargo fmt`, `clippy -- -D warnings`, and `test` (60
+pass: +21 — camera-follow's placement tests, `ChunkPos::of_block`,
+`LoadedChunks::is_solid`, `player::physics`'s collision suite, and
+`input::movement`'s gesture tests) all clean, plus a boot run with no
+panics, warnings, or errors. Not confirmed by eye, for the usual reason this
+environment can't drive the game interactively: whether the model actually
+renders with its texture, whether it visibly faces the way it walks, how
+the third-person distance and pivot height feel, whether gravity and
+jumping feel right at the chosen constants, and whether the F4 mode switch
+and the double-tap gestures (sprint, take off, fast ascent, land) all
+trigger the way they're meant to in an actual play session.*
+
+### 2026-09-30
+
+**Two small fixes to the gravity/mode batch above, and a new config doc.**
+
+**Sprint no longer survives a wall.** Reported after trying the previous
+batch: running toward a wall with `DoubleTap` sprint engaged, colliding, then
+jumping over the obstacle while still holding the movement key kept sprint
+engaged the whole way through — it never got the *only* thing that turns it
+off (every movement key released), since the key never was released.
+`player::physics::Motion` gained `horizontal_collision`, set from
+`Moved.blocked.x || .z` at the end of `apply_physics` — deliberately never
+`.y`, which is `true` every single frame while walking on flat ground (that's
+landing, not a wall) and would otherwise misfire sprint's reset constantly.
+`input::movement::cancel_sprint_on_collision` reads it the next frame and
+clears `Gestures::sprinting`, gated on the new
+`config::player::RESET_SPRINT_ON_COLLISION` (default `true`) so the behaviour
+is a config choice, not a hardcoded one. Pulled into its own one-line
+function specifically so it has a direct unit test instead of only being
+reachable through the full `apply_physics`/`read_movement` system pair.
+
+**A noclip toggle for Creative.** Requested as a debug feature: the ability
+to switch terrain collision off and on while testing. `player::physics`
+gained `CollisionEnabled`, a resource read at the top of `apply_physics` —
+off, a frame's `MovementIntent` is applied straight to `Transform` with no
+block checks at all, and both `grounded` and `horizontal_collision` are
+forced false rather than keep whatever they were before collision was
+switched off. New `player::debug` module (F5 /
+`config::input::TOGGLE_COLLISION`) follows the exact two-gate shape every
+other testing feature here already does — `TESTING_TOOLS_ENABLED`,
+`in_creative`, and an `_INITIALLY_*` constant
+(`config::debug::COLLISION_INITIALLY_DISABLED`) guarded by both, so
+collision can never start disabled with no hotkey able to turn it back on.
+`game_mode::toggle_game_mode` now also unconditionally re-enables collision
+on every mode switch, in either direction — leaving Creative with it off
+must never strand the player noclipping through Survival, mirroring the
+reset `Flying` already gets on the same switch.
+
+**`docs/CONFIG.md`.** Requested: a dedicated doc for `config/`'s own
+structure, now that it spans six files and two recurring patterns (the
+settings-surface enum, the two-gate debug toggle). Deliberately describes
+*structure and convention*, not current values — those stay in the `///`
+comments next to each constant, the only place they can't drift out of sync
+with the code. Linked from `README.md`'s doc list and `ARCHITECTURE.md`'s
+Configuration section.
+
+*Perf: no change worth measuring — one new boolean field, one new resource
+read, one new early-exit branch. Modularity: the noclip toggle follows
+`player/`'s own established debug-module shape rather than inventing a new
+one. Correctness: `cargo fmt`, `clippy -- -D warnings`, and `test` (62 pass:
++2, the collision-reset function's two cases) all clean, plus a boot run
+with no panics, warnings, or errors. Not confirmed by eye: whether the
+sprint reset actually feels right in play, and whether F5 visibly toggles
+collision — this environment still can't drive the game interactively.*
 
 ---
 

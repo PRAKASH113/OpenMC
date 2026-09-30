@@ -42,6 +42,27 @@ and were reverted; and the sea-level marker was rebuilt from two
 camera-following lines into a real per-column grid. See `IMPROVEMENTS.md`'s
 2026-09-28 (2) and (3) entries. No open item here was affected.
 
+**Updated again, 2026-09-29.** A `player/` module arrived in two parts of
+the same request: first the player model (`assets/models/player.glb`) with
+a third-person camera, then gravity, terrain collision, and a
+Survival/Creative game-mode switch. `world/` and the debug chunk grid now
+load around the player, not the camera, which resolves 3.3 (removed). Two
+new items came with the camera half: 4.7 (camera has no collision) and 4.8
+(spawn is a fixed constant, not the real surface). 4.4 was updated with
+what's now been seen and what's new to check. Also fixed in passing: 2.1
+(README's controls table and module tree, both now stale in new ways —
+folded into this round's fix rather than left for later). See
+`IMPROVEMENTS.md`, 2026-09-29.
+
+**Updated again, 2026-09-30.** Two fixes reported from actually playing the
+2026-09-29 batch: a `DoubleTap` sprint that survived colliding with a wall
+(now cancelled the frame after, gated by the new
+`config::player::RESET_SPRINT_ON_COLLISION`), and a requested noclip toggle
+for Creative (`player::debug`, `F5`). `docs/CONFIG.md` was also added,
+documenting `config/`'s structure and conventions rather than its current
+values. No open item here was resolved or newly raised. See
+`IMPROVEMENTS.md`, 2026-09-30.
+
 This file lists improvements that are identified but **not yet done**,
 ranked by the four tiers in `CLAUDE.md`. Nothing here has been implemented.
 When an item is acted on or rejected, move it to `IMPROVEMENTS.md` (a change
@@ -54,14 +75,17 @@ about that row, not a quiet change.
 largest 190), `Cargo.toml`, `Cargo.lock`, `.gitignore`, every file in
 `docs/`, `README.md`, and the parent `CLAUDE.md`. Also run: `cargo clippy
 -- -D warnings` (clean), `cargo test` (15 pass), a `clippy::pedantic` +
-`clippy::nursery` pass, and `cargo tree -d`. **Now (2026-09-28) 40 files
-(3,446 lines, largest 385 — `world/mod.rs`, still well under the 800-line
-limit), 35 tests.** The pedantic/nursery and `cargo tree` findings below are
-still only as of the 26th and have not been re-run since — everything added
-since then (`render/`, `config/debug.rs`, `world/debug.rs`, terrain
-generation, the mesher swap, async generation, vertical chunk loading,
-`render::debug`) has not been scanned by those two passes at all. How to
-repeat this scan is at the bottom of the file.
+`clippy::nursery` pass, and `cargo tree -d`. **Now (2026-09-30) 46 files
+(4,709 lines, largest 441 — `input/movement.rs`, still well under the
+800-line limit but past the 200–400 typical range `CLAUDE.md` names, worth
+watching if it keeps growing), 62 tests.** The pedantic/nursery and
+`cargo tree` findings below are still only as of the 26th and have not been
+re-run since — everything added since then (`render/`, `config/debug.rs`,
+`world/debug.rs`, terrain generation, the mesher swap, async generation,
+vertical chunk loading, `render::debug`, `player/`, third-person camera,
+gravity and collision, game modes, noclip) has not been scanned by those two
+passes at all. How to repeat this
+scan is at the bottom of the file.
 
 ---
 
@@ -71,17 +95,17 @@ repeat this scan is at the bottom of the file.
 | --- | --- | --- | --- | --- |
 | 1.5 | Perf | `opt-level = 0` for our crate | Tiny | Reconfirmed: measure once greedy meshing exists |
 | 1.6a | Perf | Meshing (still) runs synchronously on the main thread | Small–Med | Deferred until asked for |
-| 2.1 | Read | README controls table and module tree are wrong | Tiny | Do |
 | 2.2 | Read | ARCHITECTURE "Startup configuration" describes deleted modules | Small | Do |
 | 2.4 | Read | `unsafe_code` lint declared twice; comment contradicts `Cargo.toml` | Tiny | Decide which one to keep |
 | 2.5 | Read | Stale or inaccurate doc comments in 7 places | Small | Do |
 | 2.6 | Read | `CLAUDE.md` "What exists today" is missing `world/` and `render/` | Tiny | Do |
 | 3.1 | Mod | `fly` is at the ~50-line limit, with sprint logic inline and untested | Small | Do |
-| 3.3 | Mod | `world/` finds the player through the camera | — | Note only: revisit with `player/` |
 | 4.2 | Other | Test gaps: look clamp, `Hold` sprint, plugin wiring | Small–Med | Do the first two |
 | 4.4 | Other | Runtime checks still unconfirmed | — | Check by eye |
 | 4.5 | Other | Release builds cannot log anywhere | Medium | Carry over: before a release |
 | 4.6 | Other | Temporary scaffolding still to delete | — | Carry over: as replacements land |
+| 4.7 | Other | Third-person camera has no collision; clips into terrain | Small–Med | When it gets in the way |
+| 4.8 | Other | Player spawns at a fixed position, not on the terrain surface | Small | With player physics |
 
 ---
 
@@ -119,20 +143,6 @@ spawn/update step stays in a polling system, the same shape
 ---
 
 ## Tier 2 — Readability and discoverability
-
-### 2.1 README controls table and module tree are wrong
-
-`README.md` is the first thing a stranger reads, and it currently says:
-
-- `Left Ctrl` flies down. It is `Left Shift` now.
-- `Left Shift` sprints. Sprint is now a double-tap of W/A/S/D, or holding
-  `Left Ctrl` when `SPRINT_MODE` is `Hold`.
-- The module tree has no `world/`, and does not list `config/camera.rs` or
-  `config/world.rs`.
-- "Terrain, chunks … are next". Chunk data now exists; rendering is next.
-
-**Recommendation:** fix all four. Point the controls table at
-`config/input.rs` as the source of truth, so it is easier to keep in sync.
 
 ### 2.2 ARCHITECTURE "Startup configuration" describes deleted modules
 
@@ -210,14 +220,6 @@ with `last_tap` and `sprinting` grouped into one `SprintState` struct. Pass
 function, so tests can cover **both** modes whatever the constant says.
 `fly` then passes `controls::SPRINT_MODE` in.
 
-### 3.3 `world/` finds the player through the camera — note only
-
-`load_chunks_around_player` queries `With<WorldCamera>`. That is correct
-today, because the camera *is* the player, and the dependency direction
-(`world/` → `camera/`) is legitimate. When `player/` arrives, switch to a
-player marker so `world/` doesn't depend on how the view is rendered.
-**No action now.**
-
 ---
 
 ## Tier 4 — Everything else
@@ -242,14 +244,31 @@ player marker so `world/` doesn't depend on how the view is rendered.
 
 Confirmed by you: the cursor lock and controls on first entering the game,
 the pause overlay appearing and clearing, double-tap sprint and Shift to
-descend, and F11 restoring the window size. Not yet confirmed by eye:
-changing `FOV_DEGREES`, `SprintMode::Hold` with Left Ctrl, the F10
-borderless toggle, and — new since `render/` — whether a chunk actually
-appears on screen as a solid green surface rather than nothing, whether the
-player now spawns above it instead of inside it, and whether every face
-renders right-side-out rather than inside-out (the winding in `render/mesh`
-was checked by hand with the cross-product for all six faces and by the
-vertex-count tests, but never seen rendered).
+descend, F11 restoring the window size, and — from the 2026-09-28 play
+sessions' screenshots — chunks rendering as solid, right-side-out terrain.
+Not yet confirmed by eye: changing `FOV_DEGREES`, `SprintMode::Hold` with
+Left Ctrl, the F10 borderless toggle, and — new with `player/` — that the
+player model loads and shows its texture, that it faces the way it walks
+(its −Z facing was read off the file's UVs, not seen), and how the
+third-person distance and pivot height feel in play.
+
+### 4.7 Third-person camera has no collision
+
+`camera::follow` places the camera a fixed distance behind the player with
+no check against terrain. Backing the player up against a hill, or looking
+up from low ground, puts the camera inside solid blocks. The usual fix is a
+ray from the pivot toward the desired camera position, stopping at the first
+solid block — which needs a voxel raycast over `LoadedChunks` that doesn't
+exist yet (block interaction will need the same thing). **Do it when it
+actually gets in the way**, ideally sharing that raycast.
+
+### 4.8 Player spawns at a fixed position
+
+`player::SPAWN_POSITION` is a constant (`8, 15, 16`), chosen only to clear
+the ±10-block terrain band. The player floats above whatever the ground is
+there. Finding the real surface means sampling the column's height from
+`world::generation` (or the loaded chunk) at spawn. It only matters once
+there's gravity, so **do it alongside player physics**.
 
 ### 4.5 Release builds cannot log anywhere — carried over
 

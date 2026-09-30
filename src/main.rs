@@ -20,6 +20,7 @@ mod app;
 mod camera;
 mod config;
 mod input;
+mod player;
 mod render;
 mod states;
 mod utils;

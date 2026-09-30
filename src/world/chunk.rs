@@ -42,6 +42,26 @@ impl ChunkPos {
         }
     }
 
+    /// The chunk holding the block at integer world coordinate `block`, and
+    /// that block's position inside it.
+    ///
+    /// Euclidean division, for the same reason [`Self::containing`] floors:
+    /// block `-1` is the last block of chunk `-1`, not the first of chunk `0`.
+    pub fn of_block(block: IVec3) -> (Self, UVec3) {
+        let size = config::CHUNK_SIZE as i32;
+        let chunk = Self {
+            x: block.x.div_euclid(size),
+            y: block.y.div_euclid(size),
+            z: block.z.div_euclid(size),
+        };
+        let local = UVec3::new(
+            block.x.rem_euclid(size) as u32,
+            block.y.rem_euclid(size) as u32,
+            block.z.rem_euclid(size) as u32,
+        );
+        (chunk, local)
+    }
+
     /// This chunk's origin corner, in world (block) units — where `render/`
     /// places the entity that renders it, since a chunk's mesh is built in
     /// its own local space (block `(0,0,0)` to `(SIZE,SIZE,SIZE)`).
@@ -196,6 +216,14 @@ mod tests {
     fn the_origin_is_chunk_zero() {
         let pos = ChunkPos::containing(Vec3::ZERO);
         assert_eq!(pos, ChunkPos { x: 0, y: 0, z: 0 });
+    }
+
+    #[test]
+    fn of_block_splits_a_block_into_its_chunk_and_local_position() {
+        let size = config::CHUNK_SIZE as i32;
+        let (chunk, local) = ChunkPos::of_block(IVec3::new(-1, 0, size + 1));
+        assert_eq!(chunk, ChunkPos { x: -1, y: 0, z: 1 });
+        assert_eq!(local, UVec3::new(size as u32 - 1, 0, 1));
     }
 
     #[test]

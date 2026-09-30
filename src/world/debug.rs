@@ -11,18 +11,21 @@ use bevy::prelude::*;
 use super::ChunkLock;
 use crate::config::debug as debug_config;
 use crate::config::input;
+use crate::player::in_creative;
 
 /// Registers the chunk-lock hotkey, if testing tools are enabled.
 ///
 /// A plain `if` around registration rather than a run condition on the
 /// system: with testing tools off, the toggle system is never added to the
 /// schedule at all, instead of being added and skipping its body every
-/// frame the key isn't pressed.
+/// frame the key isn't pressed. The key itself only works in Creative — see
+/// `config::player::GameMode::Survival`.
 pub(super) fn register(app: &mut App) {
     if debug_config::TESTING_TOOLS_ENABLED {
         app.add_systems(
             Update,
-            toggle_chunk_lock.run_if(input_just_pressed(input::TOGGLE_CHUNK_LOCK)),
+            toggle_chunk_lock
+                .run_if(input_just_pressed(input::TOGGLE_CHUNK_LOCK).and_then(in_creative)),
         );
     }
 }

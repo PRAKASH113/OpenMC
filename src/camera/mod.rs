@@ -4,7 +4,8 @@
 //! module registers them. The UI camera (`camera_ui`) draws the interface
 //! and lives for the whole run; the world camera (`camera_world`) renders the
 //! 3D world and exists only while one is loaded. Both are named for what they
-//! show, not for how they render.
+//! show, not for how they render. `follow` is the world camera's runtime
+//! half: the third-person view that keeps it behind the player each frame.
 //!
 //! Camera settings that only matter to one camera — draw order, MSAA — live
 //! with that camera rather than in shared config, because they are exactly
@@ -13,15 +14,17 @@
 
 mod camera_ui;
 mod camera_world;
+mod follow;
 
 use bevy::prelude::*;
 
 use camera_ui::UiCameraPlugin;
 use camera_world::WorldCameraPlugin;
 
-// What the rest of the crate needs to steer the world camera — its marker and
-// its orientation. `crate::input` is the consumer.
-pub(crate) use camera_world::{LookAngles, WorldCamera};
+// The world camera's marker, for the few places outside this module that
+// need to find it — `render::debug` puts its gizmos on a layer only this
+// camera sees.
+pub(crate) use camera_world::WorldCamera;
 
 /// Registers every camera.
 pub struct CameraPlugin;

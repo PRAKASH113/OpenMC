@@ -13,10 +13,10 @@ use bevy::input::keyboard::KeyCode;
 
 // ---------------------------------------------------------------- movement
 
-/// Move the way the camera is facing.
+/// Move the way the player is facing, level with the ground.
 pub const FORWARD: KeyCode = KeyCode::KeyW;
 
-/// Move opposite the camera's facing.
+/// Move opposite the player's facing, level with the ground.
 pub const BACKWARD: KeyCode = KeyCode::KeyS;
 
 /// Strafe left.
@@ -25,16 +25,23 @@ pub const LEFT: KeyCode = KeyCode::KeyA;
 /// Strafe right.
 pub const RIGHT: KeyCode = KeyCode::KeyD;
 
-/// Rise, regardless of where the camera points.
+/// On foot: jump. In Creative, double-tap to take off. While flying: rise,
+/// and double-tap then hold to rise at double speed.
 pub const UP: KeyCode = KeyCode::Space;
 
-/// Descend, regardless of where the camera points.
+/// While flying: descend. In Creative, double-tap to stop flying and fall
+/// back under gravity. Does nothing on foot yet.
 pub const DOWN: KeyCode = KeyCode::ShiftLeft;
 
 // -------------------------------------------------------------------- game
 
 /// Pause, and resume again from paused.
 pub const PAUSE: KeyCode = KeyCode::Escape;
+
+/// Switch between the game modes (`config::player::GameMode`). F4, beside
+/// where Minecraft keeps its own game-mode switcher (F3+F4). Works in every
+/// mode — it's how you get back out of Survival.
+pub const TOGGLE_GAME_MODE: KeyCode = KeyCode::F4;
 
 // ------------------------------------------------------------------ window
 
@@ -46,16 +53,23 @@ pub const TOGGLE_FULLSCREEN: KeyCode = KeyCode::F11;
 
 // -------------------------------------------------------- control settings
 
-/// Radians of camera rotation per pixel of mouse movement.
+/// Radians of view rotation per pixel of mouse movement.
 ///
 /// Raise for a twitchier feel. This is the setting most worth tuning
 /// against how it actually plays rather than reasoning about.
 pub const LOOK_SENSITIVITY: f32 = 0.002;
 
-/// Movement speed in world units per second.
-pub const MOVE_SPEED: f32 = 12.0;
+/// Movement speed on foot, in blocks per second. Minecraft walks at about 4.3.
+pub const WALK_SPEED: f32 = 4.3;
 
-/// Speed multiplier applied while sprinting.
+/// Movement speed while flying, in blocks per second, on every axis.
+pub const FLY_SPEED: f32 = 12.0;
+
+/// How much faster the player rises after a double-tap of [`UP`] while
+/// flying, for as long as it stays held.
+pub const FAST_ASCENT_MULTIPLIER: f32 = 2.0;
+
+/// Speed multiplier applied while sprinting, on foot or flying.
 pub const SPRINT_MULTIPLIER: f32 = 3.0;
 
 /// The two ways sprint can be triggered.
@@ -83,9 +97,10 @@ pub enum SprintMode {
 /// themselves. Change it here and rebuild to switch styles.
 pub const SPRINT_MODE: SprintMode = SprintMode::DoubleTap;
 
-/// How quickly two presses of the same movement key must follow each other
-/// to count as a double-tap. Only read when [`SPRINT_MODE`] is
-/// [`SprintMode::DoubleTap`].
+/// How quickly two presses of the same key must follow each other to count
+/// as a double-tap — for sprint (when [`SPRINT_MODE`] is
+/// [`SprintMode::DoubleTap`]) and for taking off, landing, and fast ascent
+/// with [`UP`] and [`DOWN`].
 pub const DOUBLE_TAP_WINDOW: f32 = 0.3;
 
 /// Held to sprint when [`SPRINT_MODE`] is [`SprintMode::Hold`].
@@ -95,6 +110,12 @@ pub const DOUBLE_TAP_WINDOW: f32 = 0.3;
 pub const SPRINT_HOLD_KEY: KeyCode = KeyCode::ControlLeft;
 
 // ------------------------------------------------------------------- debug
+//
+// Two kinds of key here. The testing tools (F5–F9, and the modifier) only
+// work in Creative — see `config::player::GameMode`. The state jumps (1–3)
+// work in every mode: they stand in for a menu that doesn't exist yet, and
+// `3` is the only way into a world at all, so gating them on a mode that
+// only exists in-game would lock the player out.
 
 /// Jump straight to the loading state. Debug builds only.
 #[cfg(debug_assertions)]
@@ -122,9 +143,9 @@ pub const TOGGLE_CHUNK_LOCK: KeyCode = KeyCode::F9;
 #[cfg(debug_assertions)]
 pub const TOGGLE_WIREFRAME: KeyCode = KeyCode::F8;
 
-/// Cycle the chunk-bounds grid drawn around whichever chunk the camera is
+/// Cycle the chunk-bounds grid drawn around whichever chunk the player is
 /// currently in: none, an outline, or an outline with axis lines through
-/// its centre. Testing only — inert unless
+/// its centre and across each face. Testing only — inert unless
 /// [`crate::config::debug::TESTING_TOOLS_ENABLED`] is `true`. See
 /// `render::debug`.
 #[cfg(debug_assertions)]
@@ -132,20 +153,28 @@ pub const TOGGLE_CHUNK_GRID: KeyCode = KeyCode::F7;
 
 /// Held alongside [`TOGGLE_CHUNK_GRID`] to lock the grid to its current
 /// chunk instead of cycling its display mode — it then stops following the
-/// camera, the same way [`TOGGLE_CHUNK_LOCK`] freezes chunk loading. A
+/// player, the same way [`TOGGLE_CHUNK_LOCK`] freezes chunk loading. A
 /// dedicated modifier rather than reusing [`SPRINT_HOLD_KEY`] (Left
 /// Control): this is an unrelated debug gesture, not a second meaning for a
 /// gameplay key. Testing only, same as the key it modifies.
 #[cfg(debug_assertions)]
 pub const DEBUG_MODIFIER: KeyCode = KeyCode::AltLeft;
 
-/// Toggle the sea-level marker: two lines at absolute world height `0`
-/// crossing under the camera, showing where `CHUNKS_BELOW_SEA_LEVEL` starts.
+/// Toggle the sea-level marker: a grid at absolute world height `0` across
+/// every loaded chunk column, showing where `CHUNKS_BELOW_SEA_LEVEL` starts.
 /// Testing only — inert unless
 /// [`crate::config::debug::TESTING_TOOLS_ENABLED`] is `true`. See
 /// `render::debug`.
 #[cfg(debug_assertions)]
 pub const TOGGLE_SEA_LEVEL_LINE: KeyCode = KeyCode::F6;
+
+/// Toggle the player's terrain collision off (pass straight through blocks)
+/// or back on. Testing only — inert unless
+/// [`crate::config::debug::TESTING_TOOLS_ENABLED`] is `true`, and only takes
+/// effect in [`crate::config::player::GameMode::Creative`], the same as
+/// every other key here. See `player::debug`.
+#[cfg(debug_assertions)]
+pub const TOGGLE_COLLISION: KeyCode = KeyCode::F5;
 
 #[cfg(test)]
 mod tests {
@@ -167,6 +196,7 @@ mod tests {
             ("DOWN", DOWN),
             ("SPRINT_HOLD_KEY", SPRINT_HOLD_KEY),
             ("PAUSE", PAUSE),
+            ("TOGGLE_GAME_MODE", TOGGLE_GAME_MODE),
             ("TOGGLE_BORDERLESS", TOGGLE_BORDERLESS),
             ("TOGGLE_FULLSCREEN", TOGGLE_FULLSCREEN),
         ];
@@ -184,6 +214,7 @@ mod tests {
             ("TOGGLE_CHUNK_GRID", TOGGLE_CHUNK_GRID),
             ("DEBUG_MODIFIER", DEBUG_MODIFIER),
             ("TOGGLE_SEA_LEVEL_LINE", TOGGLE_SEA_LEVEL_LINE),
+            ("TOGGLE_COLLISION", TOGGLE_COLLISION),
         ]);
 
         all

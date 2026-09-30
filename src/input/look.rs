@@ -1,13 +1,13 @@
-//! Mouse look: turning mouse movement into view rotation.
+//! Mouse look: turning mouse movement into where the player looks.
 
 use std::f32::consts::FRAC_PI_2;
 
 use bevy::input::mouse::MouseMotion;
 use bevy::prelude::*;
 
-use crate::camera::{LookAngles, WorldCamera};
 // Aliased: inside `crate::input`, a bare `input::` would read as this module.
 use crate::config::input as controls;
+use crate::player::{LookAngles, Player};
 
 /// How close to straight up/down the view may pitch.
 ///
@@ -15,10 +15,15 @@ use crate::config::input as controls;
 /// over — so it lives with the control that enforces it, not in config.
 const PITCH_LIMIT: f32 = FRAC_PI_2 - 0.01;
 
-/// Turns mouse movement into camera rotation.
+/// Turns mouse movement into the player's look angles, and turns the player's
+/// body to match.
+///
+/// Only yaw reaches the body: the model turns to face where the player looks
+/// but never tilts forward or back. Pitch only moves the camera, which
+/// `camera::follow` places from these same angles.
 pub(super) fn look(
     mut motion: MessageReader<MouseMotion>,
-    mut camera: Query<(&mut Transform, &mut LookAngles), With<WorldCamera>>,
+    mut player: Query<(&mut Transform, &mut LookAngles), With<Player>>,
 ) {
     // Several motion events can arrive in one frame; only their sum matters.
     // Summing first means one angle update and one quaternion rebuild per
@@ -31,12 +36,12 @@ pub(super) fn look(
         return;
     }
 
-    let Ok((mut transform, mut angles)) = camera.single_mut() else {
+    let Ok((mut transform, mut angles)) = player.single_mut() else {
         return;
     };
 
     angles.yaw -= delta.x * controls::LOOK_SENSITIVITY;
     angles.pitch =
         (angles.pitch - delta.y * controls::LOOK_SENSITIVITY).clamp(-PITCH_LIMIT, PITCH_LIMIT);
-    transform.rotation = Quat::from_euler(EulerRot::YXZ, angles.yaw, angles.pitch, 0.0);
+    transform.rotation = Quat::from_rotation_y(angles.yaw);
 }
