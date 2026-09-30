@@ -150,19 +150,12 @@ fn update_gestures(
     flying: &mut Flying,
     gestures: &mut Gestures,
 ) {
-    match controls::SPRINT_MODE {
-        controls::SprintMode::Hold => gestures.sprinting = keys.pressed(controls::SPRINT_HOLD_KEY),
-        // Engages on a double-tap and stays engaged, the way Minecraft's
-        // sprint toggle works, until every movement key is released.
-        controls::SprintMode::DoubleTap => {
-            if double_tap.is_some_and(|key| MOVEMENT_KEYS.contains(&key)) {
-                gestures.sprinting = true;
-            }
-            if !MOVEMENT_KEYS.iter().any(|&key| keys.pressed(key)) {
-                gestures.sprinting = false;
-            }
-        }
-    }
+    update_sprint(
+        keys,
+        controls::SPRINT_MODE,
+        double_tap,
+        &mut gestures.sprinting,
+    );
 
     if mode == GameMode::Creative {
         if double_tap == Some(controls::UP) {
@@ -179,6 +172,35 @@ fn update_gestures(
     }
     if !flying.0 || !keys.pressed(controls::UP) {
         gestures.fast_ascent = false;
+    }
+}
+
+/// Updates `sprinting` for one `mode`, from this frame's keys and whichever
+/// key (if any) just completed a double-tap.
+///
+/// Takes `mode` as a parameter rather than reading [`controls::SPRINT_MODE`]
+/// directly, so tests can exercise both [`controls::SprintMode`] variants
+/// regardless of which one the constant currently selects — only
+/// `update_gestures`, the caller, needs to change to switch which mode is
+/// actually live.
+fn update_sprint(
+    keys: &ButtonInput<KeyCode>,
+    mode: controls::SprintMode,
+    double_tap: Option<KeyCode>,
+    sprinting: &mut bool,
+) {
+    match mode {
+        controls::SprintMode::Hold => *sprinting = keys.pressed(controls::SPRINT_HOLD_KEY),
+        // Engages on a double-tap and stays engaged, the way Minecraft's
+        // sprint toggle works, until every movement key is released.
+        controls::SprintMode::DoubleTap => {
+            if double_tap.is_some_and(|key| MOVEMENT_KEYS.contains(&key)) {
+                *sprinting = true;
+            }
+            if !MOVEMENT_KEYS.iter().any(|&key| keys.pressed(key)) {
+                *sprinting = false;
+            }
+        }
     }
 }
 
@@ -334,6 +356,71 @@ mod tests {
     fn a_different_key_is_not_a_double_tap() {
         let last = Some((KeyCode::KeyW, 1.0));
         assert!(!is_double_tap(KeyCode::KeyA, 1.05, last));
+    }
+
+    #[test]
+    fn hold_mode_sprints_only_while_the_key_is_pressed() {
+        let mut sprinting = false;
+        update_sprint(
+            &held(&[controls::SPRINT_HOLD_KEY]),
+            controls::SprintMode::Hold,
+            None,
+            &mut sprinting,
+        );
+        assert!(sprinting);
+
+        update_sprint(&held(&[]), controls::SprintMode::Hold, None, &mut sprinting);
+        assert!(!sprinting);
+    }
+
+    #[test]
+    fn hold_mode_ignores_a_movement_double_tap() {
+        // A double-tap of a movement key is only `DoubleTap` mode's trigger;
+        // `Hold` must read only the hold key, whatever else is passed in.
+        let mut sprinting = false;
+        update_sprint(
+            &held(&[]),
+            controls::SprintMode::Hold,
+            Some(controls::FORWARD),
+            &mut sprinting,
+        );
+        assert!(!sprinting);
+    }
+
+    #[test]
+    fn double_tap_mode_engages_sprint_on_a_movement_double_tap() {
+        let mut sprinting = false;
+        update_sprint(
+            &held(&[controls::FORWARD]),
+            controls::SprintMode::DoubleTap,
+            Some(controls::FORWARD),
+            &mut sprinting,
+        );
+        assert!(sprinting);
+    }
+
+    #[test]
+    fn double_tap_mode_disengages_once_every_movement_key_is_released() {
+        let mut sprinting = true;
+        update_sprint(
+            &held(&[]),
+            controls::SprintMode::DoubleTap,
+            None,
+            &mut sprinting,
+        );
+        assert!(!sprinting);
+    }
+
+    #[test]
+    fn double_tap_mode_stays_engaged_while_any_movement_key_is_held() {
+        let mut sprinting = true;
+        update_sprint(
+            &held(&[controls::LEFT]),
+            controls::SprintMode::DoubleTap,
+            None,
+            &mut sprinting,
+        );
+        assert!(sprinting);
     }
 
     #[test]

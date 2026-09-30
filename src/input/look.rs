@@ -40,8 +40,52 @@ pub(super) fn look(
         return;
     };
 
-    angles.yaw -= delta.x * controls::LOOK_SENSITIVITY;
-    angles.pitch =
-        (angles.pitch - delta.y * controls::LOOK_SENSITIVITY).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    *angles = apply_look(*angles, delta);
     transform.rotation = Quat::from_rotation_y(angles.yaw);
+}
+
+/// Applies one frame's mouse `delta` to `angles`, clamping pitch to
+/// [`PITCH_LIMIT`] so the view can never flip over. Yaw is unbounded.
+fn apply_look(angles: LookAngles, delta: Vec2) -> LookAngles {
+    LookAngles {
+        yaw: angles.yaw - delta.x * controls::LOOK_SENSITIVITY,
+        pitch: (angles.pitch - delta.y * controls::LOOK_SENSITIVITY)
+            .clamp(-PITCH_LIMIT, PITCH_LIMIT),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn yaw_accumulates_unclamped() {
+        let angles = LookAngles::default();
+        let angles = apply_look(angles, Vec2::new(100.0, 0.0));
+        assert_eq!(angles.yaw, -100.0 * controls::LOOK_SENSITIVITY);
+    }
+
+    #[test]
+    fn pitch_clamps_at_the_upper_limit() {
+        // A huge downward mouse delta (negative Y raises pitch) must not
+        // push the view past straight up.
+        let angles = LookAngles::default();
+        let angles = apply_look(angles, Vec2::new(0.0, -1_000_000.0));
+        assert_eq!(angles.pitch, PITCH_LIMIT);
+    }
+
+    #[test]
+    fn pitch_clamps_at_the_lower_limit() {
+        let angles = LookAngles::default();
+        let angles = apply_look(angles, Vec2::new(0.0, 1_000_000.0));
+        assert_eq!(angles.pitch, -PITCH_LIMIT);
+    }
+
+    #[test]
+    fn pitch_within_range_is_unaffected_by_the_clamp() {
+        let angles = LookAngles::default();
+        let delta = Vec2::new(0.0, 1.0);
+        let angles = apply_look(angles, delta);
+        assert_eq!(angles.pitch, -delta.y * controls::LOOK_SENSITIVITY);
+    }
 }

@@ -32,7 +32,7 @@ pub(crate) struct Player;
 /// player's body, and pitch only tilts the camera, so the model always stays
 /// upright. [`crate::input`] updates both from the mouse, and
 /// [`crate::camera`] reads both to place the view.
-#[derive(Component, Default)]
+#[derive(Component, Default, Clone, Copy)]
 pub(crate) struct LookAngles {
     /// Rotation around the vertical axis. Unbounded — it wraps naturally.
     pub yaw: f32,

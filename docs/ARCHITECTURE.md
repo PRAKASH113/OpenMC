@@ -227,8 +227,9 @@ frame and applies it to the player. One file per control:
 
 - **`look.rs`** turns the mouse into the player's `LookAngles` and turns the
   body to match. Only yaw reaches the body's transform, so the model never
-  tilts; pitch only moves the camera. It also holds the pitch clamp that
-  stops the view flipping over.
+  tilts; pitch only moves the camera. The pitch clamp that stops the view
+  flipping over lives in the pure `apply_look(angles, delta) -> LookAngles`,
+  tested at both limits and in between.
 - **`movement.rs`** turns held keys into the player's `MovementIntent`:
   which way to walk or fly, at what speed, and whether to jump. It doesn't
   move anything itself. Forward, back and strafe follow the body's own
@@ -238,7 +239,10 @@ frame and applies it to the player. One file per control:
   In Creative, a double-tap of Space takes off, and a double-tap of Space
   while flying rises at double speed while held. A double-tap of Left Shift
   lands. Each piece is a plain helper with its own tests: `register_taps`,
-  `update_gestures`, `movement_intent`, `axis`.
+  `update_gestures`, `update_sprint`, `movement_intent`, `axis`.
+  `update_sprint` takes its `SprintMode` as a parameter rather than reading
+  `controls::SPRINT_MODE` directly, specifically so both modes are testable
+  regardless of which one the constant currently selects.
 - **`cursor.rs`** locks the mouse while playing, which only exists so looking
   works.
 

@@ -75,22 +75,33 @@ reference on request, on top of its existing structure/convention sections.
 `cargo fmt --check`, `cargo check`, and `cargo test` (62 pass, unchanged) all
 clean. See `IMPROVEMENTS.md`, 2026-09-30 (2).
 
-This file lists improvements that are identified but **not yet done**,
-ranked by the four tiers in `CLAUDE.md`. Nothing here has been implemented.
-When an item is acted on or rejected, move it to `IMPROVEMENTS.md` (a change
-log entry, and a standing-decision row if it sets a rule) and delete it here.
-Before proposing anything, check the standing decisions table in
-`IMPROVEMENTS.md`: an idea that contradicts a row there needs a conversation
-about that row, not a quiet change.
+**Updated a third time, 2026-09-30.** 3.1 done, and 4.2's first two gaps
+closed alongside it; 4.4 confirmed by you playing the current build. **From
+this point on, items are marked `[DONE]` in place rather than deleted from
+this file** — a change from every earlier round, which moved a resolved item
+to `IMPROVEMENTS.md` and removed it here. Requested: keep the full history of
+what was found and what was done about it in one file. `IMPROVEMENTS.md`
+still gets its own change-log entry for the same work, for the *why*, in the
+order things happened. See `IMPROVEMENTS.md`, 2026-09-30 (3).
+
+This file lists improvements that have been identified, whether or not they
+have been acted on yet — see each item's status. When an item is acted on or
+rejected, mark it `[DONE]` or `[REJECTED]` in place (with a short note on
+what happened) rather than deleting it, and add a change log entry — and a
+standing-decision row if it sets a rule — to `IMPROVEMENTS.md`. Before
+proposing anything, check the standing decisions table in `IMPROVEMENTS.md`:
+an idea that contradicts a row there needs a conversation about that row, not
+a quiet change.
 
 **Scope originally scanned (2026-09-26):** all 35 Rust files (1,899 lines,
 largest 190), `Cargo.toml`, `Cargo.lock`, `.gitignore`, every file in
 `docs/`, `README.md`, and the parent `CLAUDE.md`. Also run: `cargo clippy
 -- -D warnings` (clean), `cargo test` (15 pass), a `clippy::pedantic` +
 `clippy::nursery` pass, and `cargo tree -d`. **Now (2026-09-30) 46 files
-(4,709 lines, largest 441 — `input/movement.rs`, still well under the
-800-line limit but past the 200–400 typical range `CLAUDE.md` names, worth
-watching if it keeps growing), 62 tests.** The pedantic/nursery and
+(4,845 lines, largest 528 — `input/movement.rs`, still well under the
+800-line limit but past the 200–400 typical range `CLAUDE.md` names, and
+growing — more than half of it is now tests, added closing 3.1 and 4.2),
+71 tests.** The pedantic/nursery and
 `cargo tree` findings below are still only as of the 26th and have not been
 re-run since — everything added since then (`render/`, `config/debug.rs`,
 `world/debug.rs`, terrain generation, the mesher swap, async generation,
@@ -107,13 +118,13 @@ scan is at the bottom of the file.
 | --- | --- | --- | --- | --- |
 | 1.5 | Perf | `opt-level = 0` for our crate | Tiny | Reconfirmed: measure once greedy meshing exists |
 | 1.6a | Perf | Meshing (still) runs synchronously on the main thread | Small–Med | Deferred until asked for |
-| 3.1 | Mod | `fly` is at the ~50-line limit, with sprint logic inline and untested | Small | Do |
-| 4.2 | Other | Test gaps: look clamp, `Hold` sprint, plugin wiring | Small–Med | Do the first two |
-| 4.4 | Other | Runtime checks still unconfirmed | — | Check by eye |
+| 3.1 | Mod | `fly` is at the ~50-line limit, with sprint logic inline and untested | Small | **[DONE]** — sprint extracted to `update_sprint` |
+| 4.2 | Other | Test gaps: look clamp, `Hold` sprint, plugin wiring | Small–Med | **[DONE]** for look clamp and `Hold` sprint; plugin wiring still open |
+| 4.4 | Other | Runtime checks still unconfirmed | — | **[DONE]** — confirmed in play by you |
 | 4.5 | Other | Release builds cannot log anywhere | Medium | Carry over: before a release |
-| 4.6 | Other | Temporary scaffolding still to delete | — | Carry over: as replacements land |
-| 4.7 | Other | Third-person camera has no collision; clips into terrain | Small–Med | When it gets in the way |
-| 4.8 | Other | Player spawns at a fixed position, not on the terrain surface | Small | With player physics |
+| 4.6 | Other | Temporary scaffolding still to delete | — | Carry over: once a real menu exists |
+| 4.7 | Other | Third-person camera has no collision; clips into terrain | Small–Med | Deferred: revisit once terrain gets more detailed |
+| 4.8 | Other | Player spawns at a fixed position, not on the terrain surface | Small | Deferred: revisit once terrain gets more interesting |
 
 ---
 
@@ -152,7 +163,7 @@ spawn/update step stays in a polling system, the same shape
 
 ## Tier 3 — Modularity
 
-### 3.1 `fly` is at the ~50-line limit, with sprint logic inline
+### 3.1 `fly` is at the ~50-line limit, with sprint logic inline — `[DONE]`
 
 `input::movement::fly` is 46 lines of code. It reads movement intent, runs
 the sprint state machine for both `SprintMode`s, and applies motion. Only
@@ -168,27 +179,52 @@ with `last_tap` and `sprinting` grouped into one `SprintState` struct. Pass
 function, so tests can cover **both** modes whatever the constant says.
 `fly` then passes `controls::SPRINT_MODE` in.
 
+**Done, 2026-09-30, with one deliberate deviation.** The function this
+originally described (`fly`) no longer exists by that name; the sprint logic
+by the time this was picked up already lived inside `update_gestures`,
+itself already split out of the top-level system. `update_sprint(keys,
+mode: controls::SprintMode, double_tap, sprinting: &mut bool)` now holds just
+the sprint decision, taking `mode` as a parameter exactly as recommended —
+that's the part that actually mattered, since it's what makes both modes
+testable regardless of the live constant. **Not done as suggested:** a
+`SprintState` struct grouping `last_tap` and `sprinting`. `last_tap` tracks
+double-taps for *every* tracked key (Space and Shift for flight, not just the
+four movement keys sprint cares about), so pulling it into a sprint-specific
+struct would've split one shared piece of state across two owners for no
+real gain. `sprinting` moved out to its own testable function instead; `Gestures`
+keeps holding all of it together, which is where it actually belongs. See
+`IMPROVEMENTS.md`, 2026-09-30 (3).
+
 ---
 
 ## Tier 4 — Everything else
 
-### 4.2 Test gaps
+### 4.2 Test gaps — look clamp and `Hold` sprint `[DONE]`; plugin wiring open
 
 15 tests exist, all pure logic. Remaining gaps:
 
 - **Look pitch clamp.** The maths in `input::look::look` sits inside the
   system. Pull out `apply_look(angles, delta) -> LookAngles` and test the
   clamp at both limits. (Also suggested in audit #1 as item 4.4.)
+  **Done, 2026-09-30:** extracted exactly as described; four tests cover yaw
+  accumulating unbounded, the clamp firing at both the upper and lower
+  `PITCH_LIMIT`, and an in-range delta passing through untouched.
 - **`Hold` sprint mode.** Covered by 3.1's extraction.
+  **Done, 2026-09-30**, alongside 3.1: `update_sprint` taking `mode` as a
+  parameter made both variants directly testable. Five new tests: `Hold`
+  sprints only while its key is held and ignores a movement-key double-tap;
+  `DoubleTap` engages on a movement double-tap, disengages once every
+  movement key is released, and stays engaged while any one is still held.
 - **Plugin wiring.** `CLAUDE.md` asks for "a thin integration test that
   builds an `App` … and calls `App::update()`". None exist. A first one: an
   `App` with `MinimalPlugins`, `StatesPlugin` and `GameStatePlugin`, updated
   twice, asserting `GameState::Menu` (checks the `Loading → Menu` exit).
   **Medium effort:** the state screens spawn UI and the world camera needs
   rendering types, so what the headless `App` can include has to be worked
-  out. Worth doing once there is more wiring to protect.
+  out. Worth doing once there is more wiring to protect. **Still open** —
+  not part of this round.
 
-### 4.4 Runtime checks still unconfirmed
+### 4.4 Runtime checks still unconfirmed `[DONE]`
 
 Confirmed by you: the cursor lock and controls on first entering the game,
 the pause overlay appearing and clearing, double-tap sprint and Shift to
@@ -200,7 +236,10 @@ player model loads and shows its texture, that it faces the way it walks
 (its −Z facing was read off the file's UVs, not seen), and how the
 third-person distance and pivot height feel in play.
 
-### 4.7 Third-person camera has no collision
+**Done, 2026-09-30:** confirmed by you, playing the current build and going
+through every remaining item above by hand. Nothing found broken.
+
+### 4.7 Third-person camera has no collision — deferred
 
 `camera::follow` places the camera a fixed distance behind the player with
 no check against terrain. Backing the player up against a hill, or looking
@@ -210,13 +249,22 @@ solid block — which needs a voxel raycast over `LoadedChunks` that doesn't
 exist yet (block interaction will need the same thing). **Do it when it
 actually gets in the way**, ideally sharing that raycast.
 
-### 4.8 Player spawns at a fixed position
+**Confirmed still open, 2026-09-30:** deliberately deferred until terrain
+generation gets more detailed — flat, gently-rolling terrain rarely puts the
+camera against a wall, so there's little to gain from building the raycast
+against today's terrain.
+
+### 4.8 Player spawns at a fixed position — deferred
 
 `player::SPAWN_POSITION` is a constant (`8, 15, 16`), chosen only to clear
 the ±10-block terrain band. The player floats above whatever the ground is
 there. Finding the real surface means sampling the column's height from
 `world::generation` (or the loaded chunk) at spawn. It only matters once
 there's gravity, so **do it alongside player physics**.
+
+**Confirmed still open, 2026-09-30:** deliberately deferred alongside 4.7,
+for the same reason — worth doing once terrain is interesting enough that a
+fixed spawn point is actually likely to land somewhere awkward.
 
 ### 4.5 Release builds cannot log anywhere — carried over
 
@@ -245,9 +293,9 @@ reason:
 - **Per-frame allocations:** none. The only allocations are one-off:
   `format!` in the log setup, `to_string` for the window title, a mesh-handle
   `clone` when spawning the scene, and the chunk `Vec` at generation.
-- **File and function size:** the largest file is 190 lines (`movement.rs`,
-  more than half of it tests). No function is over the limit except the
-  borderline `fly` (3.1).
+- **File and function size:** the largest file is now `movement.rs` at 528
+  lines, more than half of it tests. No function is over the limit; the one
+  borderline case (3.1) is resolved.
 - **Pedantic and nursery lints (37 warnings):** none worth acting on.
   - Redundant `pub(crate)` inside private modules: style only, and the
     explicit form documents intent.
@@ -298,4 +346,7 @@ Repeat these steps each time, then replace this file:
    "What exists today" match `find src -name '*.rs'`.
 8. Check each carried-over item's trigger (for example, "when meshing
    exists") to see whether it has fired.
-9. Record decisions in `IMPROVEMENTS.md`, then rewrite this file.
+9. Record decisions in `IMPROVEMENTS.md`. In this file, mark each resolved
+   item `[DONE]` or `[REJECTED]` in place with a short note — don't delete
+   it — and add a new dated "Updated" paragraph at the top summarizing the
+   round, the same way every entry above does.

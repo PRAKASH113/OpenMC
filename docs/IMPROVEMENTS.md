@@ -1726,6 +1726,63 @@ changes only. Readability: this pass's whole point. Correctness: `cargo fmt
 --check` and `cargo check` both clean; no `.rs` logic changed so `cargo test`
 wasn't expected to move and wasn't re-run.*
 
+### 2026-09-30 (3)
+
+**3.1 done, 4.2's first two gaps closed with it, 4.4 confirmed, and
+`AUDIT.md` changes how it records what's finished.**
+
+**3.1 — sprint extracted into its own testable function.** By the time this
+was picked up, the function the audit item named (`fly`) no longer existed
+under that name; the sprint decision already lived inside `update_gestures`.
+Pulled it out further into `update_sprint(keys, mode: controls::SprintMode,
+double_tap, sprinting: &mut bool)`, taking `mode` as a parameter instead of
+reading `controls::SPRINT_MODE` from inside the function — the part of the
+audit's recommendation that actually mattered, since it's what makes both
+`SprintMode` variants testable regardless of which one the constant
+currently selects. Deliberately **not** done: grouping `last_tap` and
+`sprinting` into a `SprintState` struct, as the audit item suggested.
+`last_tap` tracks double-taps across all six tracked keys (Space and Shift
+for flight, not just the four sprint cares about), so a sprint-specific
+struct would have split one piece of shared state across two owners for no
+real benefit — `sprinting` moved out to its own function; `Gestures` still
+owns all of it together.
+
+**4.2's first two test gaps closed alongside it.** `input::look::look`'s
+pitch clamp is now the pure `apply_look(angles: LookAngles, delta: Vec2) ->
+LookAngles`, with four tests: yaw accumulating unclamped, the clamp firing at
+both `PITCH_LIMIT` boundaries, and an in-range delta passing through
+untouched. `LookAngles` gained `Clone, Copy` to support the
+`*angles = apply_look(*angles, delta)` pattern — a two-`f32`-field struct,
+so a free derive. `Hold` sprint mode is now covered by `update_sprint` taking
+`mode` explicitly: five new tests (`Hold` sprints only while held and ignores
+a movement double-tap; `DoubleTap` engages on one, disengages once every
+movement key is released, and stays engaged while any one is still held).
+Plugin wiring, the third gap, stays open — medium effort, and not part of
+what was asked for this round.
+
+**4.4 confirmed.** You played the current build and went through every item
+still marked unconfirmed by eye. Nothing found broken.
+
+**4.7 and 4.8 stay open, explicitly deferred.** Both were reconfirmed rather
+than acted on: camera-terrain collision and a real spawn-surface lookup both
+matter more once terrain generation is doing more than a smooth heightmap —
+revisit them when that lands, not before.
+
+**`AUDIT.md` now marks resolved items `[DONE]` in place instead of deleting
+them.** Every earlier round moved a finished item's detail out of `AUDIT.md`
+entirely once it was recorded here. Changed on request, to keep the full
+history — finding and resolution together — in one file rather than split
+across two. This file still gets its own entry for the same work, for *why*,
+in the order things happened; that division of labor between the two files
+is unchanged.
+
+*Perf: none — this round touched control-reading code, not a hot per-frame
+path beyond what was already there (`update_sprint`/`apply_look` are called
+at the same rate their callers already ran at, just as separate functions
+now). Modularity: 3.1's whole point. Correctness: `cargo fmt`,
+`clippy -- -D warnings`, and `test` (71 pass: +9 — 4 look-clamp tests, 5
+sprint-mode tests) all clean.*
+
 ---
 
 ## Open items
