@@ -13,8 +13,11 @@ to quietly undo.
 ## Standing decisions
 
 Grouped by area. Each row is a rule currently in force. When one changes,
-move the old version to **Reversals** below instead of editing it away.
-Last reviewed in full: audit #2, 2026-09-26.
+move the old version to **Reversals** below instead of editing it away. A
+row whose *rule* still holds but whose wording had gone stale (a finished
+step still described as pending, a deleted file still cited) is corrected
+in place, with the change noted in that audit's change-log entry.
+Last reviewed in full: audit #3, 2026-09-30.
 
 ### Dependencies and build
 
@@ -23,8 +26,8 @@ Last reviewed in full: audit #2, 2026-09-26.
 | `encase*` pinned to `0.12.1` in `Cargo.lock` | `0.12.2` moved to `syn 3` while `bevy_macro_utils` is on `syn 2`, and the mismatched `syn` types break the `bevy_encase_derive` proc macro. Do not `cargo update -p encase` past this until upstream fixes it. (`syn 3` itself is compiled anyway via `bytemuck_derive`; the pin is about the type mismatch, not build time.) |
 | `opt-level = 0` for our crate, `3` for dependencies | Our code compiles fast; Bevy is compiled once and cached. Raise ours only after **measuring** a real hot loop — meshing is the named trigger. |
 | Windows uses `rust-lld.exe` as its linker (`.cargo/config.toml`); Linux/macOS blocks are left commented as reference, not enabled | Requested — this project only targets Windows right now. Confirmed present on this machine's toolchain by checking the filesystem before enabling it, not assumed. |
-| `bevy` uses `default-features = false, features = ["3d", "ui"]`, dropping `audio` and `2d` | No sound exists; the UI camera being `Camera2d` still works without the `2d` feature because `ui` already pulls in the Core2d render pass it needs — reasoned from the dependency graph (audit #2, "Step 2"), confirmed by a clean build and a boot run reaching `Menu`. Step 3 (dropping glTF) stays undone: it needs every `3d` sub-feature this project actually uses hand-listed correctly, which is worth doing with a build available to check the list is complete, not blind. |
-| `noise` added as a dependency ahead of any code using it | Added in the same pass as the Bevy feature trim specifically so both changes share one full rebuild instead of two. Default features only; no code reads it yet. |
+| `bevy` uses `default-features = false, features = ["3d", "ui"]`, dropping `audio` and `2d` | No sound exists; the UI camera being `Camera2d` still works without the `2d` feature because `ui` already pulls in the Core2d render pass it needs — reasoned from the dependency graph (audit #2, "Step 2"), confirmed by a clean build and a boot run reaching `Menu`. **Step 3 (dropping glTF) is no longer an option**: since 2026-09-29 the player is a glTF model (`assets/models/player.glb`), so `bevy_gltf` is a real dependency. The `Cargo.toml` comment still describing it as unused is audit #3's 2.4. |
+| `noise` is the terrain-noise dependency (`world::generation`'s `Fbm<Perlin>`); its `rand 0.8` / `rand_core 0.6` / `rand_xorshift` stack, a duplicate beside Bevy's `rand 0.10`, is accepted | Added in the same pass as the Bevy feature trim so both shared one rebuild; used since 2026-09-27. The duplicate is the only one in the tree that comes from us rather than from inside Bevy (audit #3): `0.9.0` is the latest `noise`, and the three crates are small and compiled once, so replacing the noise library to drop them isn't worth it. Revisit if `noise` releases against a newer `rand`. |
 
 ### Layout
 
@@ -34,7 +37,7 @@ Last reviewed in full: audit #2, 2026-09-26.
 | `main.rs` holds only `mod` declarations and crate attributes | Setup belongs in `app`. The only reason to reopen it is adding a module. |
 | Every state lives under `states/`, one folder each; a sub-state's folder sits inside its parent's | The top level separates states from infrastructure, and the folders mirror the state hierarchy — `paused/` is in `ingame/` because `Paused` is a sub-state of `InGame`. |
 | The state machine lives in `states/mod.rs`; each state folder is private to it | Someone looking for `GameState` finds it where the states are. `app/` keeps only `run()` and the composition root. |
-| Domains are top-level siblings: `camera/`, `input/`, `window/`, `world/` | A module that owns a category of thing is a domain, not a utility. `window/` was promoted out of `utils/` once it split into two files by lifecycle. |
+| Domains are top-level siblings: `camera/`, `input/`, `player/`, `render/`, `window/`, `world/` (`config/` and `utils/` beside them) | A module that owns a category of thing is a domain, not a utility. `window/` was promoted out of `utils/` once it split into two files by lifecycle. |
 | `utils/` holds only small, complete modules with no natural domain (currently just `log.rs`) | The bar is completeness with no natural home elsewhere, not size — kept narrow on purpose so it does not collect an in-progress design by default. |
 | One file per lifecycle when a module does both startup and runtime work | `window/` is `setup.rs` (once) plus `toggles.rs` (on keypress). |
 | Debug-only tooling lives in its own module behind one `#[cfg(debug_assertions)]` | `states/debug.rs` is compiled out of release as a whole — provably absent, not a cfg on every item. |
@@ -44,8 +47,9 @@ Last reviewed in full: audit #2, 2026-09-26.
 
 | Decision | Why |
 | --- | --- |
-| Every configurable value lives in `config/`, one file per category: `window`, `input`, `camera`, `world` | One answer to "where do I change a setting?". A new category is a new file, not a decision. |
-| `config/` is `pub const` values; the only types allowed are small enums a setting chooses between (`SprintMode`) | A settings surface meant to be read in seconds. No structs or `Default` impls until values must load from disk at startup. |
+| Every configurable value lives in `config/`, one file per category: `window`, `input`, `camera`, `world`, `player`, `debug` | One answer to "where do I change a setting?". A new category is a new file, not a decision. |
+| `config/` is `pub const` values; the only types allowed are small enums a setting chooses between (`SprintMode`, `GameMode`, `ChunkGridMode`) | A settings surface meant to be read in seconds. No structs or `Default` impls until values must load from disk at startup. |
+| `docs/CONFIG.md` holds `config/`'s structure and conventions, plus a snapshot of every current value; when it disagrees with a constant's `///` comment, the source wins | Requested (2026-09-30 (2)), knowing a value list in a second place can drift. The file says so at the top, and each audit checks the snapshot against the code (audit checklist step 8). |
 | Bevy enums used directly (`PresentMode`), never mirrored | A copy would lose the fallback semantics and need updating whenever Bevy's enum grows. "Let Bevy decide" is the *value* `AutoVsync`, not a separate mode. |
 | Values that are not player preferences stay with their owner, not in `config/` | Camera draw order and MSAA are rendering details; the pitch clamp is a safety limit. They live in `camera_*` / `input::look`. |
 | Config modules are imported under an alias when the bare name would read as the importing module | `use crate::config::input as controls` inside `input/`, `config::camera as config` inside `camera/`, `config::world as config` inside `world/`. |
@@ -56,8 +60,8 @@ Last reviewed in full: audit #2, 2026-09-26.
 | --- | --- |
 | Rare triggers are run conditions, not `if`s inside systems | The system is skipped outright when its trigger is absent — no query fetch, no body. Chain with `.and_then(..)`; `.and()` is deprecated. |
 | Per-frame systems exit on the common case before querying or doing maths | At `opt-level = 0`, inlined glam maths runs unoptimised in our crate. Skipping it beats speeding it up. |
-| `AudioPlugin` and `GilrsPlugin` are disabled at runtime | No sound and no controllers exist. Both are leaf plugins. Re-enable Gilrs for controller support; delete the Audio line when the `audio` feature is dropped. |
-| Systems that read a moving entity's `Transform` to decide whether to act (e.g. `load_chunks_around_player`) filter on `Changed<Transform>`, not just the entity's marker | If the entity hasn't moved, whatever depends on its position can't have changed either. Coarser than tracking the specific derived value (rotating in place also counts as "changed"), but it's the built-in query filter, reached for before a hand-rolled check. |
+| `GilrsPlugin` is disabled at runtime; audio is dropped at the Cargo feature level instead, so `AudioPlugin` doesn't exist to disable | No controllers and no sound exist. Gilrs is a leaf plugin, and Bevy offers no feature to drop it, so runtime is the only option; re-enable it for controller support. Audio *does* have a feature, and dropping that (2026-09-27) removes `bevy_audio` from the tree entirely — the stronger form of the same decision. `ARCHITECTURE.md` and `CLAUDE.md` still describing Audio as runtime-disabled is audit #3's 2.3. |
+| Systems that read a moving entity's `Transform` to decide whether to act (e.g. `load_chunks_around_player`) filter on `Changed<Transform>`, not just the entity's marker | If the entity hasn't moved, whatever depends on its position can't have changed either. Coarser than tracking the specific derived value (rotating in place also counts as "changed"), but it's the built-in query filter, reached for before a hand-rolled check. **Under review:** audit #3's 1.1 found that at `RENDER_DISTANCE = 6` the coarse version rescans ~338 candidates every moving *or turning* frame, and recommends adding a "did the chunk change" check on top. The filter itself stays either way. If that lands, amend this row rather than reversing it. |
 | `Chunk` stores blocks with `y` slowest (`x + z*S + y*S²`, "YZX", the layout Minecraft uses), never a different axis order without updating `Chunk::index`'s pinning test | Terrain is naturally described by height, so a layout where every block sharing a height is contiguous turns "fill everything below this height" into one slice fill (`Chunk::fill_below_height`) instead of a per-block loop. Whichever axis order is picked, generation and meshing must agree with it — that was the original bug this fixed. |
 
 ### States
@@ -68,6 +72,8 @@ Last reviewed in full: audit #2, 2026-09-26.
 | `Loading` is boot loading only | World generation is planned as `InGame`'s first sub-state and soft loading as a counted overlay, not a state. See [`LOADING.md`](LOADING.md). |
 | `Paused` is a sub-state of `InGame`, not a sibling | Makes "paused with no world loaded" unrepresentable instead of guarded at runtime. |
 | The pause screen is a translucent overlay (`OVERLAY` alpha `0.5`) | The world stays visible underneath. Earlier "too dark at any alpha" reports were the UI-texture accumulation bug, not the alpha. |
+| A screen's buttons live in that state's own `screen.rs`, beside the screen they belong to: the menu's Play (`Menu -> InGame`) and the pause overlay's Exit (`Paused -> Menu`). Each is a marker component plus a system filtered on `Changed<Interaction>` that recolours it and sets the next state on `Pressed` | Consistent with self-contained screens (the row above). `Changed<Interaction>` keeps the system free on the far more common frame nobody is touching the button. Exit leaves for `Menu` rather than un-pausing: pausing suspends the world, Exit tears it down, and `InGame`'s own `OnExit` systems already clear everything. |
+| A button's marker is `pub(crate)` like its screen marker, and its query filter is a named type alias (`PlayButtonChanged = (Changed<Interaction>, With<PlayButton>)`) | The marker appears in the signature of a system the parent module registers, so a private marker is a hard compile error. The alias keeps clippy's `type_complexity` quiet without an `#[allow]`. Both found when audit #3's baseline failed on this code. |
 
 ### Camera and rendering
 
@@ -104,6 +110,9 @@ Last reviewed in full: audit #2, 2026-09-26.
 | `DoubleTap`: the *same* W/A/S/D key twice within `DOUBLE_TAP_WINDOW` (0.3 s); sprint stays on until every movement key is released | Minecraft's feel — no re-triggering on every direction change. |
 | No cursor re-grab on focus, no focus request after F10/F11, no Escape debounce | Each was added for a theory the logs disproved during the 2026-09-26 overlay bug, and removed. Re-add only with evidence (for example, logged `WindowFocused` loss). |
 | `input/movement.rs` only writes `MovementIntent`; it never touches `Transform` itself | Separates "what the keys ask for" from "what actually happens" — `player::physics` decides that, since a wall or the ground can override intent. Also what lets both be unit-tested independently. |
+| Sprint's decision is its own pure function, `update_sprint(keys, mode, double_tap, sprinting)`, taking `SprintMode` as a parameter instead of reading `SPRINT_MODE` inside | So tests cover *both* modes whatever the constant currently selects; only the caller passes the live constant. Audit #2's 3.1, done 2026-09-30 (3). |
+| `Gestures` keeps `last_tap` and `sprinting` together; they are **not** split into a sprint-specific `SprintState` | Audit #2 suggested the split and it was declined: `last_tap` tracks double-taps for all six keys (Space and Shift for flight, not just sprint's four), so a sprint-only struct would split one shared piece of state across two owners. See 2026-09-30 (3). |
+| Mouse look's maths is the pure `apply_look(angles, delta) -> LookAngles`; the system only reads motion and writes the result | Makes the pitch clamp testable at both limits, which it wasn't while it sat inside the system. `LookAngles` is `Copy` (two `f32`s) to support `*angles = apply_look(*angles, delta)`. Audit #2's 4.2, 2026-09-30 (3). |
 | Space and Left Shift double-taps (take off, fast ascent, land) share `DOUBLE_TAP_WINDOW` and the same tap-tracking machinery as sprint, across all six movement/vertical keys at once | One completed double-tap clears the record outright, so a third tap starts a fresh pair instead of chaining — tapping Space three times takes off once, not "take off, then fast ascent". Reusing sprint's timing constant means one setting tunes the feel of every double-tap in the game, not several that could drift apart. |
 
 ### Player
@@ -116,7 +125,7 @@ Last reviewed in full: audit #2, 2026-09-26.
 | Only yaw reaches the player's `Transform`; pitch only moves the camera | The model must stay upright looking up or down. `input::look` writes both angles to `LookAngles` but rotates the body by yaw alone. |
 | Movement, gravity, and collision act on the player's own `right()`/`forward()`, which are level because of the yaw-only rule above | Walking forward while looking down stays along the ground instead of driving into it — no separate "flatten this vector" step needed anywhere. |
 | Two game modes (`config::player::GameMode`), Survival and Creative, chosen by an `ActiveGameMode` resource and switched with `F4` | Requested, with Minecraft's names kept only as placeholders until the game has its own. A resource, not a player component, since mode outlives any one world and systems that never touch the player (every testing-tool key) need to read it as a run condition (`in_creative`). |
-| Every testing-tool hotkey (`world::debug`, `render::debug`) is additionally gated on `in_creative` | Requested: Survival should play the way the game ships; debug tools are a Creative-only convenience layered on top of the existing `TESTING_TOOLS_ENABLED` gate, not a replacement for it. |
+| Every testing-tool hotkey (`world::debug`, `render::debug`, `player::debug`) is additionally gated on `in_creative`; the debug state-jump keys (`1`–`3`) are not | Requested: Survival should play the way the game ships; debug tools are a Creative-only convenience layered on top of the existing `TESTING_TOOLS_ENABLED` gate, not a replacement for it. The jump keys were left ungated because `GameMode` only means something in-game, and they were once the only way into a world. They're shortcuts now that the menu has a Play button, and whether to keep them is audit #3's 4.3. |
 | Flight exists only in Creative, toggled by double-tapping Space (take off) or Left Shift (land), tracked as a plain `Flying(bool)` component | Requested. A component, not folded into `MovementIntent`, because it's state that persists across frames (am I currently flying) rather than a per-frame ask. Switching game mode resets it — off in Survival unconditionally, `CREATIVE_STARTS_FLYING` in Creative — so a mode swap can never leave the player flying somewhere flight isn't supposed to exist. |
 | Gravity, jump speed, terminal velocity, and the hitbox are plain constants in `config::player`, not derived from the model | Same reasoning as every other `config/` value — a tunable someone would actually reach for. The hitbox (0.6 wide, 1.9 tall) is deliberately narrower and shorter than the 2-block model, the same relationship Minecraft's 0.6-wide hitbox has to its own taller model, so the player fits through gaps the model's own silhouette wouldn't. |
 | Collision moves the player one axis at a time (vertical first), each axis stopping flush against the first solid block rather than the whole move being cancelled | Per-axis is what makes sliding along a wall possible — a blocked horizontal axis doesn't also cancel a still-open vertical one (or the other horizontal one). Vertical first settles landing before any sliding, so walking along the ground never snags on the block being stood on. |
@@ -124,7 +133,8 @@ Last reviewed in full: audit #2, 2026-09-26.
 | `LoadedChunks::is_solid` treats an *ungenerated* chunk inside the world's vertical extent as solid, and anything outside that extent as air | Generation is async, so a player can physically reach a chunk before its data exists — treating that as solid ground (rather than open air to fall through) means they wait for it instead of falling through terrain that just hasn't arrived yet. Outside the configured world height has to stay flyable regardless, or a tall enough fall or flight ceiling would hit an invisible floor. |
 | The collision maths (`move_and_collide`, `move_axis`, `overlaps_solid`) is plain functions over an `is_solid: impl Fn(IVec3) -> bool` closure | Unit-tested directly against hand-written "is this block solid" functions, no `World` or chunk data needed — the same reasoning `world::generation::generate` was built as a pure function for. |
 | Standing still on the ground (or hovering while flying) returns from `apply_physics` before touching `Transform` at all | Beyond the saved work, this is what keeps chunk loading and the camera follow idle too — both are gated on `Changed<Transform>`, so an idle player keeps every system downstream of its position idle as well. |
-| Player spawn is still a fixed constant (`player::SPAWN_POSITION`), not the real terrain surface | Unchanged from the world-camera version; genuinely needs solving once there's gravity to fall under, so it's `AUDIT.md` 4.8, not deferred indefinitely. |
+| Player spawn is still a fixed constant (`player::SPAWN_POSITION`), not the real terrain surface | Unchanged from the world-camera version. With gravity the player now falls to the ground from it, so it's cosmetic for now. Deferred until terrain is interesting enough for a fixed point to land somewhere awkward — audit #3's 4.5 (was audit #2's 4.8). |
+| Space outside the world's vertical extent is air on *both* sides, top and bottom, so there is no floor below the world | The top has to be flyable. The bottom being open is the accepted cost: only Creative (flight or noclip) can get there, since the bottom 22 blocks are guaranteed solid. A "below the world → respawn" check waits until it matters — audit #3's 4.6. |
 | `Motion` tracks whether the *last* move was stopped on `x`/`z`, never `y`, as its own field (`horizontal_collision`) rather than deriving it ad hoc from `Moved` where it's consumed | `y` is blocked every frame while walking on flat ground (that's landing, not a wall) — folding vertical in would misfire constantly. Keeping it on `Motion`, read via a `pub(crate)` accessor, is what lets `input::movement` (a different top-level module) see it without `physics`'s internals becoming any more public than that one fact. |
 | A `SprintMode::DoubleTap` sprint cancels itself the frame after a horizontal collision (`config::player::RESET_SPRINT_ON_COLLISION`, default `true`) | Requested: running into a block and jumping over it, still holding the movement key throughout, otherwise keeps the old sprint engaged the whole way — it never gets the *only* other way sprint turns off (every movement key released). A config flag because it's a judgment call about feel, not a fixed rule. The reset logic (`cancel_sprint_on_collision`) is a one-line pure function specifically so it's unit-tested directly rather than only reachable through the full ECS system. |
 | Terrain collision can be switched off entirely (`player::physics::CollisionEnabled`, a resource) via a debug hotkey (`F5`/`TOGGLE_COLLISION`) | Requested: a noclip toggle for testing, in Creative only — same shape as every other testing feature (`TESTING_TOOLS_ENABLED` + `in_creative` + an `_INITIALLY_*` constant guarded by both). Off, physics applies a frame's raw delta straight to `Transform` with no block checks; `grounded` and the collision-tracking flag both go false rather than keep a stale value from before it was switched off. |
@@ -135,7 +145,7 @@ Last reviewed in full: audit #2, 2026-09-26.
 | Decision | Why |
 | --- | --- |
 | `world/` owns voxel data only — chunk coordinates, storage, generation | Meshing and chunk rendering belong in `render/`. Keeping "what blocks exist" apart from "how they reach the screen" from the start. |
-| A chunk's blocks are one flat `Vec<Block>` indexed by a computed offset; never nested `Vec`s | One contiguous allocation; the layout meshing walks. (Which axis is slowest is still open — `AUDIT.md` 1.1.) |
+| A chunk's blocks are one flat `Vec<Block>` indexed by a computed offset; never nested `Vec`s | One contiguous allocation; the layout meshing walks. The axis order ("YZX", `y` slowest) is its own row under Performance. |
 | `ChunkPos` is its own type, distinct from block coordinates, and a `Component`; `ChunkPos::containing` floors, never truncates | A chunk and a block coordinate cannot be swapped by mistake; flooring keeps negative coordinates in the right chunk. It's a `Component` so `render/` can tag a chunk's mesh entity with the position it renders. |
 | The chunk-data resource is `LoadedChunks`, never `World` | `world/mod.rs` glob-imports `bevy::prelude::*`, which exports Bevy's own ECS `World`. Two types of the same name in one file is a standing trap. |
 | Loaded chunks live in one resource (`HashMap<ChunkPos, Chunk>`), not one entity per chunk | Nothing about chunk *data* needs the ECS. The mesh entities `render/` spawns are what renders it. |
@@ -162,7 +172,7 @@ Last reviewed in full: audit #2, 2026-09-26.
 | A testing feature's registration is skipped outright with a plain `if TESTING_TOOLS_ENABLED { app.add_systems(..) }`, not a `run_if` on the system | When disabled, the system is never in the schedule at all, not added-then-skipped every frame. |
 | Testing-feature key bindings still live in `config/input.rs`, under the existing debug section, not in `config/debug.rs` | All key bindings live in one place regardless of owner, so the "no key bound twice" test covers them too. `config/debug.rs` holds the non-binding switch (`TESTING_TOOLS_ENABLED`) that gates whether those bindings do anything. |
 | A settings-surface enum for a testing feature (`ChunkGridMode`) lives in `config::debug`, the same as `config::input::SprintMode` — the type and its starting value in `config`, the behaviour that interprets it in the module that owns the feature (`render::debug`) | Consistent with every other config value in the project: `config` holds what's tunable, the domain module holds what it does. Requested explicitly for `ChunkGridMode` and the three sea-level/chunk-grid `_INITIALLY_*` constants. See 2026-09-27 (2). |
-| A starting state that needs live ECS data not yet available at `Default`-impl time (`CHUNK_GRID_INITIALLY_LOCKED`, which needs an actual camera position) is applied by a system with a `Local<bool>` "have I done this yet" guard, not a `Default` impl | The lock can't default to a position before a camera exists to read one from; ordering one system explicitly after camera spawn would still race the very first time the state is entered, where a `Local<bool>`-guarded system that simply runs every frame until it succeeds cannot. See 2026-09-27 (2). |
+| A starting state that needs live ECS data not yet available at `Default`-impl time (`CHUNK_GRID_INITIALLY_LOCKED`, which needs an actual player position — a camera position until 2026-09-29) is applied by a system with a `Local<bool>` "have I done this yet" guard, not a `Default` impl | The lock can't default to a position before a camera exists to read one from; ordering one system explicitly after camera spawn would still race the very first time the state is entered, where a `Local<bool>`-guarded system that simply runs every frame until it succeeds cannot. See 2026-09-27 (2). |
 | Gizmos draw on their own render layer (`render::debug::GIZMO_LAYER`), which only the world camera has; the UI camera stays on layer `0` alone | Gizmos render to every camera whose layers intersect theirs. On the shared default layer the UI camera — a fixed orthographic `Camera2d` — drew a flat copy of every gizmo pinned to the middle of the screen. Moving gizmos off layer `0`, rather than the UI camera, keeps UI rendering out of it entirely. See 2026-09-28 (4). |
 | Two testing actions can share one physical key if they're the same gesture at different commitment levels (`F7` cycles the chunk grid, `Alt+F7` locks it) — not a reason to spend a second key | The run conditions for both explicitly exclude each other's modifier state (`input_pressed(DEBUG_MODIFIER)` / `not(...)`), so exactly one fires per keypress. A dedicated modifier (`Left Alt`) rather than reusing `SPRINT_HOLD_KEY` (`Left Ctrl`): this is an unrelated debug gesture, not a second meaning for a gameplay key. See 2026-09-27 (2). |
 
@@ -170,12 +180,14 @@ Last reviewed in full: audit #2, 2026-09-26.
 
 | Decision | Why |
 | --- | --- |
-| `render/` owns turning loaded chunks into what's on screen — meshing, materials, and the chunk mesh entities' lifecycle; `world/` never imports it | One-way dependency, `render/` -> `world/`, the same direction as `input/` -> `camera/`. |
+| `render/` owns turning loaded chunks into what's on screen — meshing, materials, and the chunk mesh entities' lifecycle; `world/` never imports it | One-way dependency, `render/` -> `world/` — the same shape as `input/` -> `player/` <- `camera/`, where the thing being acted on never knows who acts on it. |
 | `world/` and `render/` communicate through `ChunkLoaded`/`ChunkUnloaded` messages, not by `render/` polling `LoadedChunks` for changes | Event-driven: `render/`'s systems do nothing on a frame with no messages, instead of diffing a `HashMap` every frame whether or not it changed. |
 | Meshing uses the `binary_greedy_meshing` crate (real greedy quad merging), not a hand-rolled face-culled mesher | A maintained, MIT-licensed Rust port of a proven reference algorithm, generic over chunk size, already used in a real Bevy voxel game — preferred over hand-porting the reference C++ or hand-rolling our own. See 2026-09-27 and Reversals. |
 | The mesher's padded input buffer is filled from the six face-adjacent neighbours' boundary layer, wherever they're loaded; diagonal neighbours are never read | The crate's face culling never looks at a cell's diagonal neighbour, so reading diagonal chunk data would be pure waste — confirmed from the crate's own source, not assumed. |
 | Loading a chunk also re-meshes any of its already-spawned face neighbours | A neighbour meshed *before* this chunk existed was built assuming this side was open air; without re-meshing it, that mesh would stay stale — visibly, a permanently double-sided seam — for as long as the neighbour stays loaded. |
-| One shared `Handle<StandardMaterial>`, built once at `Startup`, reused by every chunk mesh | Same reasoning as `scene.rs`'s one shared cube mesh, applied to the material instead. A texture atlas replaces this once there is more than one visible block type. |
+| One shared `Handle<StandardMaterial>`, built once at `Startup`, reused by every chunk mesh | Every chunk looks the same, so one handle means one material on the GPU and every chunk batching together, instead of hundreds of identical copies. (Originally reasoned from the deleted `scene.rs`'s one shared cube mesh.) A texture atlas replaces this once there is more than one visible block type. |
+| Chunk mesh vertex data is `RenderAssetUsages::RENDER_WORLD` only, with no CPU-side copy kept | Nothing reads a chunk mesh back after upload — collision reads `LoadedChunks`, not meshes — so a main-world copy would be a second copy of every vertex in RAM with no reader. Revisit if picking or anything else ever needs mesh data CPU-side. |
+| The slab allocator's "Use-after-free" log is silenced in `utils::log`, not worked around in code | Confirmed against Bevy's issue tracker as a Bevy 0.19 logging quirk for zero-vertex meshes (fully air, or fully solid with every face culled), which are routine here. Nothing is actually freed while in use, so there's nothing to fix on our side. See 2026-09-28 (3). |
 | Chunk mesh entities are tracked in a `HashMap<ChunkPos, Entity>` (`ChunkEntities`), not found by querying a marker component | A `ChunkUnloaded` needs to despawn one specific chunk's entity; a map lookup is one step, a query would scan every spawned chunk. |
 | The world's `DirectionalLight` is spawned and despawned by `render/`, tied to `GameState::InGame`, not `world/` | It exists purely to make chunk meshes visible — the same category of thing as the material they're given, not world data. |
 
@@ -185,7 +197,8 @@ Last reviewed in full: audit #2, 2026-09-26.
 | --- | --- |
 | Log config lives in `utils/log.rs` and is set on `DefaultPlugins` in `AppPlugin` | `LogPlugin` is configured *on* `DefaultPlugins`; routing it through `main.rs` would plumb settings down only to hand them back. |
 | Log filters build on `DEFAULT_FILTER` rather than replacing it | Bevy's own defaults survive; ours stay additive. |
-| Audits are periodic: `AUDIT.md` is rewritten each time from its own checklist, and holds only *open* items | Decisions — accepted or rejected — are recorded here, so a later audit can compare instead of re-proposing. |
+| Audits are periodic. Each full audit **wipes `AUDIT.md` and rewrites it** from the checklist at its bottom, with a table mapping every item still carried from the previous audit to its new ID. During one audit's life, resolved items are marked `[DONE]` or `[REJECTED]` in place rather than deleted | Decisions — accepted or rejected — are recorded here, so a later audit can compare instead of re-proposing. `AUDIT.md` holds one audit at a time; this file holds the full history. The in-place marking was requested 2026-09-30 (3), and the wipe-per-audit on 2026-09-30 (4). Before this, each round deleted resolved items from `AUDIT.md` outright. |
+| An audit starts from a clean baseline: `git status` first, then fmt/clippy/test must pass, and anything fixed to get there is fixed minimally and reported | Audit #3 arrived to find uncommitted work that didn't compile. Checking `git status` first is what showed it was in-progress work, not a regression in committed code. |
 
 ---
 
@@ -211,7 +224,8 @@ not re-proposed as if it were new.
 | Engine plugin config in `utils/engine.rs` | Inline in `AppPlugin::build`, next to the domain plugin list | Disabling `AudioPlugin`/`GilrsPlugin` and swapping in our window/log plugins is deciding what the app is made of — composition, not an adapter that turns our config into one Bevy value. |
 | `window/` inside `utils/` | `window/` as a top-level module | A two-file lifecycle split (`setup.rs` + `toggles.rs`) is a domain, not a small complete utility — a sibling of `camera/` and `input/`. |
 | `utils/` as "finished adapters between settings and the engine" | `utils/` as small, complete, domain-less modules | Once `window/` and the engine config moved out, only `log.rs` remained, and "adapter" no longer described the rule. |
-| `[lints.rust]` table in `Cargo.toml` | `#![deny(unsafe_code)]` in `main.rs` — **but the table was never actually deleted** | The "Even Better TOML" extension showed a false error for the table. The move is only half done; see `AUDIT.md` 2.4. |
+| `[lints.rust]` table in `Cargo.toml` | `#![deny(unsafe_code)]` in `main.rs`, the single declaration | The "Even Better TOML" extension showed a false error for the table. The move was left half done (both declarations existed) until 2026-09-30 (2), when the table was finally deleted — audit #2's 2.4. |
+| `Cargo.toml` "Step 3": drop `bevy_gltf` by hand-listing `3d`'s sub-features, deferred until a build could verify the list | Off the table | Deferred, never done — then made impossible on 2026-09-29, when the player became a glTF model. Listed so a future feature trim doesn't propose it again. |
 | Shared `states/screen.rs` helper | Per-state `screen.rs` | Self-contained states were preferred over DRY, since the screens are placeholders meant to diverge. |
 | `Paused` as a `GameState` variant | `InGameState::Paused` sub-state | Enforcing "only pausable from in-game" structurally beats a runtime guard. Done once `InGame` owned real resources, as planned. |
 | `ingame/screen.rs` placeholder | `ingame/scene.rs` | The flat colour was scaffolding; the 3D scene replaces it. |
@@ -1782,6 +1796,112 @@ at the same rate their callers already ran at, just as separate functions
 now). Modularity: 3.1's whole point. Correctness: `cargo fmt`,
 `clippy -- -D warnings`, and `test` (71 pass: +9 — 4 look-clamp tests, 5
 sprint-mode tests) all clean.*
+
+### 2026-09-30 (4)
+
+**Audit #3: a full re-scan, `AUDIT.md` wiped and rewritten, and every
+standing decision reviewed.**
+
+Requested as the next periodic audit, run the same way as #2, with two
+changes to how the files are kept. `AUDIT.md` is wiped and rewritten per
+audit instead of accumulating rounds, and this file's standing decisions are
+brought fully up to date, so a later session doesn't redo something already
+decided, or can at least compare against it. Both are now standing rows
+under "Logging and process".
+
+**The baseline didn't compile.** Four uncommitted files, the menu's Play
+button and the pause screen's Exit button, failed `cargo check`:
+`PlayButton`/`ExitButton` were private but named in the signature of a
+`pub(crate)` system registered from the parent module. Clippy's
+`type_complexity` also flagged both button queries. Fixed with no change in
+behaviour, since the audit's own checklist requires a clean baseline: the
+markers are now `pub(crate)` like the screen markers beside them, and each
+query filter is a named alias (`PlayButtonChanged`, `ExitButtonChanged`).
+The rest of the buttons work was left as found. `cargo fmt --check`,
+`clippy -D warnings`, and `test` (71) were then clean. The checklist gained a
+`git status` step up front, so a later audit can tell in-progress work from
+a regression straight away.
+
+**What the scan covered:** all 46 files (4,977 lines), `Cargo.toml`/`.lock`,
+every doc, `README.md`, and `CLAUDE.md`. Also a pedantic+nursery clippy pass
+(134 warnings, 20 kinds, all triaged as style or provably-safe casts), a
+duplicate-dependency check, and the grep sweep. 18 findings are in the new
+`AUDIT.md`. The main ones:
+
+- **Two performance items re-weighed by a config change.** `RENDER_DISTANCE`
+  went from 2 to 6 since audit #2, taking loaded chunks from about 26 to
+  about 226.
+  - Chunk loading's `Changed<Transform>` gate, accepted as "coarse" at
+    radius 2, now means a 338-candidate rescan on every frame the player
+    moves or turns (1.1).
+  - Synchronous meshing now lands in bursts of dozens to over a hundred
+    chunks (1.3).
+  - Audit #2's `opt-level` item had its own trigger ("greedy meshing")
+    fire on 2026-09-27 without the measurement ever being taken (1.2).
+  - The checklist now says to re-weigh anything whose cost scales with a
+    config value that has changed.
+- **Stale docs, the most common finding for the third audit running.** They
+  include one comment that still states a disproven diagnosis as fact:
+  `render::spawn_chunk_meshes` blames the slab-allocator errors on mesh
+  churn, which 2026-09-28 (3) ruled out. Also stale:
+  - `CLAUDE.md`'s layout rule describes `input/ -> camera/`, a dependency
+    that no longer exists.
+  - Three docs still have `AudioPlugin` disabled at runtime.
+  - `Cargo.toml` says the game loads no models.
+  - Several docs predate the Play/Exit buttons.
+- **`apply_physics` past the line limit** with its gravity, jump and landing
+  rules untested (3.1), the same shape audit #2's `fly` had.
+- **One duplicate dependency that's ours:** `noise`'s `rand 0.8` stack.
+  Accepted, since `noise 0.9.0` is the latest (new standing row).
+
+**Audit #2's leftovers,** mapped in `AUDIT.md`'s own table:
+
+- 1.5 → 1.2, trigger fired.
+- 1.6a → 1.3, more pressing.
+- 4.2's plugin-wiring gap → 4.1.
+- 4.5 → 4.2.
+- 4.6 → 4.3, trigger partly fired by the buttons.
+- 4.7 → 4.4 and 4.8 → 4.5, both still deferred.
+
+**Standing decisions reviewed in full.** Corrected in place, since the rule
+still held and only the wording had gone stale:
+
+- The Bevy-features row: glTF is now required, so Step 3 is off the table.
+- The `noise` row: it had said "no code reads it yet".
+- The config-files and config-enums rows: now listing `player`/`debug` and
+  `GameMode`/`ChunkGridMode`.
+- The runtime-plugin row: Audio is dropped by feature, not at runtime.
+- The chunk-storage row: it still called the axis order "open".
+- The testing-tools gate row: now includes `player::debug`, and says why the
+  jump keys aren't gated.
+- The spawn row: renumbered to 4.5.
+- The initial-grid-lock row: player position, not camera.
+- The chunk-material row: it had cited the deleted `scene.rs`.
+- The Layout domains row: now listing `player/` and `render/`.
+- The `render/` dependency row: now uses `input/ -> player/ <- camera/`.
+- The audits-process row: now describes wipe-per-audit and `[DONE]`-in-place.
+
+The `Changed<Transform>` performance row is marked **under review**, pending
+1.1. The `[lints.rust]` reversal is completed: the table was deleted on
+2026-09-30 (2). One new reversal records `Cargo.toml`'s Step 3 as off the
+table for good.
+
+**New rows** for decisions made since audit #2 that had no row:
+
+- `docs/CONFIG.md` holds a value snapshot, and the source wins on conflict.
+- `update_sprint` takes `SprintMode` as a parameter.
+- The declined `SprintState` split.
+- `apply_look` is pure.
+- The Play/Exit button pattern and its visibility/alias fix.
+- Chunk meshes are `RENDER_WORLD`-only.
+- The slab-allocator log is silenced, not worked around.
+- There's no floor below the world.
+- `noise`'s duplicate is accepted.
+- An audit starts from a clean baseline.
+
+*Perf and correctness: no runtime code changed beyond the two-line baseline
+fix. `cargo fmt --check`, `clippy -D warnings`, and `test` (71 pass) clean
+after it. Everything else here is `docs/` only.*
 
 ---
 

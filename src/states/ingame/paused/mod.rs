@@ -16,6 +16,10 @@ pub struct PausedPlugin;
 impl Plugin for PausedPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(InGameState::Paused), screen::spawn)
-            .add_systems(OnExit(InGameState::Paused), screen::despawn);
+            .add_systems(OnExit(InGameState::Paused), screen::despawn)
+            .add_systems(
+                Update,
+                screen::handle_exit_button.run_if(in_state(InGameState::Paused)),
+            );
     }
 }

@@ -14,6 +14,10 @@ pub struct MenuPlugin;
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(GameState::Menu), screen::spawn)
-            .add_systems(OnExit(GameState::Menu), screen::despawn);
+            .add_systems(OnExit(GameState::Menu), screen::despawn)
+            .add_systems(
+                Update,
+                screen::handle_play_button.run_if(in_state(GameState::Menu)),
+            );
     }
 }
